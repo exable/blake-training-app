@@ -6,9 +6,9 @@ from anthropic import Anthropic
 from extensions import db
 from models import (
     WeightLog, WorkoutSession, WorkoutSet, MealLog, Meal,
-    DailyCheckin, WeeklyCheckin, WaterLog,
+    DailyCheckin, WeeklyCheckin, WaterLog, ExercisePrevious,
 )
-from program import ERO_SYSTEM_PROMPT
+from program import ERO_SYSTEM_PROMPT, PROGRAM, DAY_TO_SESSION
 from config import Config
 
 
@@ -16,6 +16,32 @@ def _client():
     if not Config.ANTHROPIC_API_KEY:
         return None
     return Anthropic(api_key=Config.ANTHROPIC_API_KEY)
+
+
+def _format_program() -> str:
+    lines = []
+    for stype, exs in PROGRAM.items():
+        lines.append(f"  {stype}:")
+        for ex in exs:
+            rpe = f" @ RPE {ex['rpe']}" if ex.get("rpe") else ""
+            lines.append(f"    - {ex['name']}: {ex['sets']}×{ex['rep_range']}{rpe}, {ex['rest']}s rest")
+    return "\n".join(lines)
+
+
+def _format_working_weights(user_id: int) -> str:
+    rows = ExercisePrevious.query.filter_by(user_id=user_id).all()
+    if not rows:
+        return "  (none logged yet)"
+    by_session: dict[str, list[str]] = {}
+    for r in rows:
+        sets = json.loads(r.sets_json)
+        summary = ", ".join(f"{s['weight_kg']}kg×{s['reps']}" for s in sets)
+        by_session.setdefault(r.session_type, []).append(f"    {r.exercise_name}: {summary}")
+    out = []
+    for stype, lines in by_session.items():
+        out.append(f"  {stype}:")
+        out.extend(lines)
+    return "\n".join(out)
 
 
 def build_context(user_id: int) -> str:
@@ -79,16 +105,25 @@ def build_context(user_id: int) -> str:
             f"{weekly.energy}/{weekly.fatigue}/{weekly.digestion}/{weekly.hunger}/{weekly.recovery}\n"
         )
 
-    ctx = f"""[BLAKE'S LIVE DATA — {today}]
-Recent bodyweight entries:
-  {chr(10).join('  ' + w for w in weight_lines) if weight_lines else '  (none)'}
+    today_session = DAY_TO_SESSION[today.weekday()]
 
-Recent workouts (last 14 days):
-  {chr(10).join('  ' + s for s in session_lines) if session_lines else '  (none)'}
+    ctx = f"""[BLAKE'S LIVE DATA — {today} ({today.strftime('%A')}, scheduled: {today_session})]
+
+CURRENT PROGRAM (ULPPL — rest Wed & Sun):
+{_format_program()}
+
+CURRENT WORKING WEIGHTS (most recent logged sets per exercise):
+{_format_working_weights(user_id)}
+
+Recent bodyweight entries:
+{chr(10).join('  ' + w for w in weight_lines) if weight_lines else '  (none)'}
+
+Recent completed workouts (last 14 days):
+{chr(10).join('  ' + s for s in session_lines) if session_lines else '  (none)'}
 
 Today's nutrition: {eaten_count}/{total_meals} meals eaten, {water_today}ml water
 Recent daily check-ins:
-  {chr(10).join('  ' + d for d in daily_lines) if daily_lines else '  (none)'}
+{chr(10).join('  ' + d for d in daily_lines) if daily_lines else '  (none)'}
 {weekly_block}
 """
     return ctx
