@@ -1,0 +1,449 @@
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { ChevronRight, Play, Pause, RotateCcw, Check, Clock, Flame, History, ArrowLeft } from 'lucide-react';
+import { api } from '../lib/api.js';
+import Spinner, { FullSpinner } from '../components/Spinner.jsx';
+import ErrorBanner from '../components/ErrorBanner.jsx';
+import useDraft from '../lib/useDraft.js';
+
+const SESSION_TYPES = ['Upper', 'Lower', 'Push', 'Pull', 'Legs'];
+
+export default function Workout() {
+  const [program, setProgram] = useState(null);
+  const [view, setView] = useState('select'); // select | live | history | session
+  const [activeSession, setActiveSession] = useState(null);
+  const [activeType, setActiveType] = useState(null);
+  const [history, setHistory] = useState([]);
+  const [historyFilter, setHistoryFilter] = useState('');
+  const [openSession, setOpenSession] = useState(null);
+  const [error, setError] = useState(null);
+
+  async function loadProgram() {
+    try {
+      const p = await api.get('/api/program');
+      setProgram(p);
+      setActiveType(p._today === 'Rest' ? 'Upper' : p._today);
+    } catch (e) {
+      setError(e.message);
+    }
+  }
+
+  async function loadHistory() {
+    try {
+      const rows = await api.get(`/api/sessions${historyFilter ? `?session_type=${historyFilter}` : ''}`);
+      setHistory(rows);
+    } catch (e) {
+      setError(e.message);
+    }
+  }
+
+  useEffect(() => { loadProgram(); }, []);
+  useEffect(() => { if (view === 'history') loadHistory(); }, [view, historyFilter]);
+
+  async function startSession(stype) {
+    setError(null);
+    try {
+      const s = await api.post('/api/sessions', { session_type: stype });
+      setActiveSession(s);
+      setActiveType(stype);
+      setView('live');
+    } catch (e) { setError(e.message); }
+  }
+
+  if (!program) return <FullSpinner />;
+
+  if (view === 'live' && activeSession) {
+    return (
+      <LiveWorkout
+        session={activeSession}
+        sessionData={program[activeSession.session_type]}
+        onDone={async () => { setView('select'); setActiveSession(null); await loadProgram(); }}
+        onCancel={() => { setView('select'); setActiveSession(null); }}
+      />
+    );
+  }
+
+  if (view === 'session' && openSession) {
+    return <SessionDetail session={openSession} onBack={() => setView('history')} />;
+  }
+
+  return (
+    <div className="space-y-5 fade-in">
+      <ErrorBanner error={error} onDismiss={() => setError(null)} />
+
+      <div className="flex items-center justify-between">
+        <h1 className="text-2xl font-bold">Workout</h1>
+        <div className="flex bg-surface2 p-1 rounded-xl text-xs">
+          <button
+            onClick={() => setView('select')}
+            className={`px-3 py-1.5 rounded-lg ${view !== 'history' ? 'bg-accent text-white' : 'text-textmuted'}`}
+          >
+            Sessions
+          </button>
+          <button
+            onClick={() => setView('history')}
+            className={`px-3 py-1.5 rounded-lg ${view === 'history' ? 'bg-accent text-white' : 'text-textmuted'}`}
+          >
+            History
+          </button>
+        </div>
+      </div>
+
+      {view === 'select' && (
+        <SessionPicker
+          program={program}
+          today={program._today}
+          onPick={startSession}
+        />
+      )}
+
+      {view === 'history' && (
+        <div className="space-y-3">
+          <div className="flex gap-2 overflow-x-auto pb-1">
+            <FilterChip active={historyFilter === ''} onClick={() => setHistoryFilter('')}>All</FilterChip>
+            {SESSION_TYPES.map((t) => (
+              <FilterChip key={t} active={historyFilter === t} onClick={() => setHistoryFilter(t)}>{t}</FilterChip>
+            ))}
+          </div>
+          {history.length === 0 && (
+            <div className="card text-center text-textmuted">No sessions logged yet.</div>
+          )}
+          {history.map((s) => (
+            <button
+              key={s.id}
+              onClick={() => { setOpenSession(s); setView('session'); }}
+              className="card card-hover w-full text-left"
+            >
+              <div className="flex items-center justify-between">
+                <div>
+                  <div className="font-semibold">{s.session_type}</div>
+                  <div className="text-xs text-textmuted">
+                    {new Date(s.started_at).toLocaleString()}
+                  </div>
+                </div>
+                <div className="flex items-center gap-2 text-xs text-textmuted">
+                  <span>{s.sets.length} sets</span>
+                  <ChevronRight size={16} />
+                </div>
+              </div>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SessionPicker({ program, today, onPick }) {
+  return (
+    <div className="space-y-3">
+      {today !== 'Rest' && (
+        <div className="card bg-accent/5 border-accent/30">
+          <div className="text-xs uppercase tracking-wider text-accent mb-1">Today's session</div>
+          <div className="flex items-center justify-between">
+            <div>
+              <div className="text-xl font-bold">{today}</div>
+              <div className="text-xs text-textmuted mt-0.5">
+                {program[today]?.exercises?.length || 0} exercises · ~{Math.round((program[today]?.exercises?.length || 0) * 8)} min
+              </div>
+            </div>
+            <button onClick={() => onPick(today)} className="btn btn-primary pulse-ring">
+              <Play size={16} /> Start
+            </button>
+          </div>
+        </div>
+      )}
+      {today === 'Rest' && (
+        <div className="card text-center">
+          <div className="text-textmuted text-sm">Rest day — recover. You can still log a session if you'd like.</div>
+        </div>
+      )}
+      <div className="text-xs uppercase tracking-wider text-textmuted px-1">All sessions</div>
+      {SESSION_TYPES.map((stype) => (
+        <button key={stype} onClick={() => onPick(stype)} className="card card-hover w-full text-left">
+          <div className="flex items-center justify-between">
+            <div>
+              <div className="font-semibold">{stype}</div>
+              <div className="text-xs text-textmuted mt-0.5">
+                {program[stype]?.exercises?.length || 0} exercises · ~{Math.round((program[stype]?.exercises?.length || 0) * 8)} min
+              </div>
+            </div>
+            <ChevronRight size={16} className="text-textmuted" />
+          </div>
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function FilterChip({ active, onClick, children }) {
+  return (
+    <button
+      onClick={onClick}
+      className={`px-3 py-1.5 rounded-full text-xs font-medium whitespace-nowrap transition-all ${
+        active ? 'bg-accent text-white' : 'bg-surface2 text-textmuted border border-line hover:text-white'
+      }`}
+    >
+      {children}
+    </button>
+  );
+}
+
+function LiveWorkout({ session, sessionData, onDone, onCancel }) {
+  const exercises = sessionData?.exercises || [];
+  const previous = sessionData?.previous || {};
+  const [draft, setDraft, clearDraft] = useDraft(`live-${session.id}`, {
+    exIdx: 0,
+    inputs: {}, // { [exIdx]: { [setIdx]: { weight, reps, rpe, logged } } }
+  });
+  const [rest, setRest] = useState({ remaining: 0, total: 0, paused: false });
+  const [error, setError] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const restRef = useRef(null);
+
+  useEffect(() => {
+    if (rest.remaining <= 0 || rest.paused) return;
+    restRef.current = setInterval(() => {
+      setRest((r) => ({ ...r, remaining: Math.max(0, r.remaining - 1) }));
+    }, 1000);
+    return () => clearInterval(restRef.current);
+  }, [rest.remaining, rest.paused]);
+
+  const ex = exercises[draft.exIdx];
+  const prevSets = ex ? (previous[ex.name] || []) : [];
+
+  function inputsFor(exIdx, setIdx) {
+    return draft.inputs[exIdx]?.[setIdx] || {};
+  }
+
+  function updateInput(exIdx, setIdx, patch) {
+    setDraft((d) => {
+      const exMap = { ...(d.inputs[exIdx] || {}) };
+      exMap[setIdx] = { ...(exMap[setIdx] || {}), ...patch };
+      return { ...d, inputs: { ...d.inputs, [exIdx]: exMap } };
+    });
+  }
+
+  async function logSet(setIdx) {
+    if (!ex) return;
+    const cur = inputsFor(draft.exIdx, setIdx);
+    if (!cur.weight || !cur.reps) {
+      setError('Enter weight and reps first.');
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      await api.post(`/api/sessions/${session.id}/sets`, {
+        exercise_name: ex.name,
+        set_number: setIdx + 1,
+        weight_kg: parseFloat(cur.weight),
+        reps: parseInt(cur.reps, 10),
+        rpe: cur.rpe ? parseFloat(cur.rpe) : null,
+      });
+      updateInput(draft.exIdx, setIdx, { logged: true });
+      setRest({ remaining: ex.rest, total: ex.rest, paused: false });
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function complete() {
+    setBusy(true);
+    try {
+      await api.post(`/api/sessions/${session.id}/complete`, {});
+      const full = await api.get(`/api/sessions/${session.id}`);
+      clearDraft();
+      // Show summary
+      window.alert(`Session complete!\n${full.sets.length} sets logged across ${new Set(full.sets.map(s => s.exercise_name)).size} exercises.`);
+      onDone();
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function next() {
+    if (draft.exIdx < exercises.length - 1) {
+      setDraft({ ...draft, exIdx: draft.exIdx + 1 });
+      setRest({ remaining: 0, total: 0, paused: false });
+    }
+  }
+  function prev() {
+    if (draft.exIdx > 0) {
+      setDraft({ ...draft, exIdx: draft.exIdx - 1 });
+      setRest({ remaining: 0, total: 0, paused: false });
+    }
+  }
+
+  if (!ex) return <div className="card">No exercises configured.</div>;
+
+  const setIdxs = Array.from({ length: ex.sets }, (_, i) => i);
+  const allLogged = setIdxs.every((i) => inputsFor(draft.exIdx, i).logged);
+
+  return (
+    <div className="space-y-4 fade-in pb-24">
+      <ErrorBanner error={error} onDismiss={() => setError(null)} />
+
+      <div className="flex items-center justify-between">
+        <button onClick={onCancel} className="btn btn-ghost px-2">
+          <ArrowLeft size={18} />
+        </button>
+        <div className="text-center">
+          <div className="text-xs uppercase tracking-wider text-textmuted">{session.session_type}</div>
+          <div className="text-sm font-semibold">Exercise {draft.exIdx + 1} of {exercises.length}</div>
+        </div>
+        <button onClick={complete} disabled={busy} className="btn btn-primary text-xs">
+          {busy ? <Spinner /> : 'Finish'}
+        </button>
+      </div>
+
+      {/* Rest timer */}
+      {rest.total > 0 && (
+        <div className="card flex items-center justify-between bg-accent/5 border-accent/30">
+          <div className="flex items-center gap-3">
+            <Clock size={20} className="text-accent" />
+            <div>
+              <div className="text-xs text-textmuted uppercase">Rest</div>
+              <div className="text-3xl font-bold tabular-nums">
+                {String(Math.floor(rest.remaining / 60)).padStart(2, '0')}:{String(rest.remaining % 60).padStart(2, '0')}
+              </div>
+            </div>
+          </div>
+          <div className="flex gap-2">
+            <button onClick={() => setRest((r) => ({ ...r, paused: !r.paused }))} className="btn btn-secondary px-3">
+              {rest.paused ? <Play size={16} /> : <Pause size={16} />}
+            </button>
+            <button onClick={() => setRest({ remaining: 0, total: 0, paused: false })} className="btn btn-secondary px-3">
+              <RotateCcw size={16} />
+            </button>
+          </div>
+        </div>
+      )}
+
+      <div className="card">
+        <div className="flex items-start justify-between mb-3">
+          <div>
+            <div className="text-lg font-bold">{ex.name}</div>
+            <div className="text-xs text-textmuted mt-0.5">
+              {ex.sets}× {ex.rep_range} reps
+              {ex.rpe && <span> · RPE {ex.rpe}</span>}
+              <span> · {Math.round(ex.rest / 60 * 10) / 10}min rest</span>
+            </div>
+          </div>
+          {allLogged && <Check size={20} className="text-accent" />}
+        </div>
+
+        <div className="space-y-2">
+          {setIdxs.map((i) => {
+            const prev = prevSets[i];
+            const cur = inputsFor(draft.exIdx, i);
+            return (
+              <div key={i} className="rounded-xl bg-surface2 p-3 border border-line">
+                <div className="flex items-center justify-between mb-2">
+                  <div className="text-xs uppercase tracking-wider text-textmuted">Set {i + 1}</div>
+                  {prev && (
+                    <div className="text-[11px] text-textmuted">
+                      Last: <span className="text-white">{prev.weight_kg}kg × {prev.reps}</span>
+                    </div>
+                  )}
+                </div>
+                <div className="grid grid-cols-3 gap-2 items-end">
+                  <div>
+                    <label className="label">Weight</label>
+                    <input
+                      inputMode="decimal"
+                      type="number"
+                      step="0.5"
+                      placeholder={prev ? `${prev.weight_kg}` : 'kg'}
+                      value={cur.weight || ''}
+                      onChange={(e) => updateInput(draft.exIdx, i, { weight: e.target.value })}
+                      disabled={cur.logged}
+                      className="input text-base"
+                    />
+                  </div>
+                  <div>
+                    <label className="label">Reps</label>
+                    <input
+                      inputMode="numeric"
+                      type="number"
+                      placeholder={prev ? `${prev.reps}` : 'reps'}
+                      value={cur.reps || ''}
+                      onChange={(e) => updateInput(draft.exIdx, i, { reps: e.target.value })}
+                      disabled={cur.logged}
+                      className="input text-base"
+                    />
+                  </div>
+                  <div>
+                    {cur.logged ? (
+                      <div className="btn btn-secondary w-full">
+                        <Check size={16} /> Done
+                      </div>
+                    ) : (
+                      <button onClick={() => logSet(i)} disabled={busy} className="btn btn-primary w-full">
+                        {busy ? <Spinner /> : 'Log'}
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      <div className="flex gap-2">
+        <button onClick={prev} disabled={draft.exIdx === 0} className="btn btn-secondary flex-1">
+          Previous
+        </button>
+        <button
+          onClick={next}
+          disabled={draft.exIdx >= exercises.length - 1}
+          className="btn btn-primary flex-1"
+        >
+          Next exercise
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function SessionDetail({ session, onBack }) {
+  const groups = useMemo(() => {
+    const m = {};
+    session.sets.forEach((s) => {
+      (m[s.exercise_name] = m[s.exercise_name] || []).push(s);
+    });
+    return m;
+  }, [session]);
+  return (
+    <div className="space-y-4 fade-in">
+      <button onClick={onBack} className="btn btn-ghost px-2">
+        <ArrowLeft size={18} /> Back
+      </button>
+      <div className="card">
+        <div className="text-xs uppercase tracking-wider text-textmuted">Session</div>
+        <div className="text-xl font-bold">{session.session_type}</div>
+        <div className="text-xs text-textmuted mt-1">
+          {new Date(session.started_at).toLocaleString()}
+          {session.completed_at && ` · Completed ${new Date(session.completed_at).toLocaleTimeString()}`}
+        </div>
+      </div>
+      {Object.entries(groups).map(([ex, sets]) => (
+        <div key={ex} className="card">
+          <div className="font-semibold mb-2">{ex}</div>
+          <div className="space-y-1">
+            {sets.map((s) => (
+              <div key={s.id} className="text-sm flex justify-between border-b border-line/50 pb-1">
+                <span className="text-textmuted">Set {s.set_number}</span>
+                <span>{s.weight_kg}kg × {s.reps}{s.rpe ? ` @ RPE ${s.rpe}` : ''}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}

@@ -1,0 +1,71 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html, body, #root {
+  height: 100%;
+  background: #0F0F0F;
+}
+
+* { -webkit-tap-highlight-color: transparent; }
+
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: #0F0F0F; }
+::-webkit-scrollbar-thumb { background: #262626; border-radius: 8px; }
+::-webkit-scrollbar-thumb:hover { background: #3B82F6; }
+
+@layer components {
+  .card {
+    @apply bg-surface border border-line rounded-2xl p-5 shadow-sm transition-all;
+  }
+  .card-hover {
+    @apply hover:border-accent/40 hover:bg-surface2;
+  }
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl font-medium text-sm transition-all active:scale-[0.98] disabled:opacity-50 disabled:pointer-events-none;
+  }
+  .btn-primary {
+    @apply bg-accent text-white hover:bg-blue-500 shadow-lg shadow-accent/20;
+  }
+  .btn-secondary {
+    @apply bg-surface2 text-white hover:bg-line border border-line;
+  }
+  .btn-ghost {
+    @apply text-textmuted hover:text-white hover:bg-surface2;
+  }
+  .input {
+    @apply w-full bg-surface2 border border-line rounded-xl px-3.5 py-2.5 text-white placeholder-textmuted focus:outline-none focus:border-accent focus:ring-2 focus:ring-accent/20 transition-all;
+  }
+  .label {
+    @apply text-xs font-medium uppercase tracking-wider text-textmuted mb-1.5 block;
+  }
+  .chip {
+    @apply inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium bg-surface2 text-textmuted border border-line;
+  }
+  .progress-track {
+    @apply w-full h-2 bg-surface2 rounded-full overflow-hidden;
+  }
+  .progress-fill {
+    @apply h-full bg-accent rounded-full transition-all duration-500;
+  }
+}
+
+.fade-in { animation: fadeIn 0.25s ease-out; }
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.slide-up { animation: slideUp 0.3s ease-out; }
+@keyframes slideUp {
+  from { opacity: 0; transform: translateY(20px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.pulse-ring {
+  animation: pulseRing 2s cubic-bezier(0.215, 0.61, 0.355, 1) infinite;
+}
+@keyframes pulseRing {
+  0% { box-shadow: 0 0 0 0 rgba(59, 130, 246, 0.5); }
+  100% { box-shadow: 0 0 0 14px rgba(59, 130, 246, 0); }
+}
