@@ -40,3 +40,23 @@ export function vibrate(pattern = [200, 100, 200]) {
     navigator.vibrate?.(pattern);
   } catch {}
 }
+
+// Service-worker scheduling for rest timer — fires a notification even when
+// the tab is in the background (as long as the browser process is alive).
+async function _swReg() {
+  if (!('serviceWorker' in navigator)) return null;
+  try { return await navigator.serviceWorker.ready; } catch { return null; }
+}
+
+export async function scheduleRestNotification(endTs, body = 'Back to it 💪', tag = 'rest-timer') {
+  const reg = await _swReg();
+  if (!reg || !reg.active) return false;
+  reg.active.postMessage({ action: 'schedule-rest', endTs, body, tag });
+  return true;
+}
+
+export async function cancelRestNotification(tag = 'rest-timer') {
+  const reg = await _swReg();
+  if (!reg || !reg.active) return;
+  reg.active.postMessage({ action: 'cancel-rest', tag });
+}

@@ -54,6 +54,7 @@ def create_app():
         db.create_all()
         ensure_schema()
         ensure_seed()
+        cleanup_stale_sessions()
 
     return app
 
@@ -70,6 +71,21 @@ def ensure_schema():
                 print("[migration] added workout_sessions.difficulty", flush=True)
     except Exception as e:
         print(f"[migration] failed: {e}", flush=True)
+
+
+def cleanup_stale_sessions():
+    """One-time cleanup: delete any incomplete sessions left over from buggy days.
+    Going forward there should only ever be at most one in-progress session per user
+    (enforced by the start_session endpoint)."""
+    try:
+        stale = WorkoutSession.query.filter(WorkoutSession.completed_at == None).all()
+        if stale:
+            for s in stale:
+                db.session.delete(s)
+            db.session.commit()
+            print(f"[cleanup] removed {len(stale)} incomplete sessions", flush=True)
+    except Exception as e:
+        print(f"[cleanup] failed: {e}", flush=True)
 
 
 # ---------------------------------------------------------------------------
@@ -389,10 +405,14 @@ def register_routes(app: Flask):
     def list_sessions():
         u = current_user()
         stype = request.args.get("session_type")
-        q = WorkoutSession.query.filter_by(user_id=u.id)
+        # History only shows COMPLETED sessions — in-progress sessions are never historical
+        q = WorkoutSession.query.filter(
+            WorkoutSession.user_id == u.id,
+            WorkoutSession.completed_at != None,
+        )
         if stype:
             q = q.filter_by(session_type=stype)
-        sessions = q.order_by(WorkoutSession.started_at.desc()).limit(100).all()
+        sessions = q.order_by(WorkoutSession.completed_at.desc()).limit(100).all()
         return [serialize_session(s) for s in sessions]
 
     @app.get("/api/sessions/in-progress")
@@ -420,10 +440,42 @@ def register_routes(app: Flask):
         u = current_user()
         data = request.get_json(force=True)
         stype = data.get("session_type") or todays_session_type()
+        today = date.today()
+
+        # 1-completed-per-day rule
+        completed_today = (WorkoutSession.query
+                           .filter(WorkoutSession.user_id == u.id,
+                                   WorkoutSession.completed_at != None,
+                                   func.date(WorkoutSession.completed_at) == today)
+                           .first())
+        if completed_today:
+            return {"error": "You've already completed a workout today."}, 400
+
+        # Only one in-progress session at a time — auto-discard any previous in-progress
+        existing = (WorkoutSession.query
+                    .filter(WorkoutSession.user_id == u.id,
+                            WorkoutSession.completed_at == None)
+                    .all())
+        for old in existing:
+            db.session.delete(old)
+        if existing:
+            db.session.commit()
+
         s = WorkoutSession(user_id=u.id, session_type=stype, started_at=datetime.utcnow())
         db.session.add(s)
         db.session.commit()
         return serialize_session(s)
+
+    @app.post("/api/sessions/<int:sid>/cancel")
+    @jwt_required()
+    def cancel_session(sid):
+        u = current_user()
+        s = WorkoutSession.query.filter_by(id=sid, user_id=u.id).first_or_404()
+        if s.completed_at:
+            return {"error": "Session already completed — can't cancel."}, 400
+        db.session.delete(s)
+        db.session.commit()
+        return {"ok": True}
 
     @app.post("/api/sessions/<int:sid>/sets")
     @jwt_required()
@@ -448,6 +500,19 @@ def register_routes(app: Flask):
     def complete_session(sid):
         u = current_user()
         s = WorkoutSession.query.filter_by(id=sid, user_id=u.id).first_or_404()
+        if s.completed_at:
+            return {"error": "Session already completed."}, 400
+
+        today = date.today()
+        already_completed_today = (WorkoutSession.query
+                                   .filter(WorkoutSession.user_id == u.id,
+                                           WorkoutSession.id != s.id,
+                                           WorkoutSession.completed_at != None,
+                                           func.date(WorkoutSession.completed_at) == today)
+                                   .first())
+        if already_completed_today:
+            return {"error": "You've already completed a workout today."}, 400
+
         data = request.get_json(silent=True) or {}
         s.completed_at = datetime.utcnow()
         s.notes = data.get("notes", "") or s.notes
@@ -480,15 +545,18 @@ def register_routes(app: Flask):
         u = current_user()
         name = request.args.get("exercise_name")
         if not name:
-            # return list of distinct exercise names logged
+            # return list of distinct exercise names from COMPLETED sessions only
             rows = (db.session.query(WorkoutSet.exercise_name)
                     .join(WorkoutSession, WorkoutSession.id == WorkoutSet.session_id)
-                    .filter(WorkoutSession.user_id == u.id)
+                    .filter(WorkoutSession.user_id == u.id,
+                            WorkoutSession.completed_at != None)
                     .distinct().all())
             return {"exercises": sorted([r[0] for r in rows])}
         rows = (db.session.query(WorkoutSet, WorkoutSession)
                 .join(WorkoutSession, WorkoutSession.id == WorkoutSet.session_id)
-                .filter(WorkoutSession.user_id == u.id, WorkoutSet.exercise_name == name)
+                .filter(WorkoutSession.user_id == u.id,
+                        WorkoutSession.completed_at != None,
+                        WorkoutSet.exercise_name == name)
                 .order_by(WorkoutSet.logged_at.asc()).all())
         points = []
         pb = 0.0

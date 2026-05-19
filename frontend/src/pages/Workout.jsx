@@ -4,7 +4,10 @@ import { api } from '../lib/api.js';
 import Spinner, { FullSpinner } from '../components/Spinner.jsx';
 import ErrorBanner from '../components/ErrorBanner.jsx';
 import useDraft from '../lib/useDraft.js';
-import { ensureNotifyPermission, notify, beep, vibrate } from '../lib/notify.js';
+import {
+  ensureNotifyPermission, notify, beep, vibrate,
+  scheduleRestNotification, cancelRestNotification,
+} from '../lib/notify.js';
 
 function fmtClock(totalSec) {
   const s = Math.max(0, Math.floor(totalSec));
@@ -61,7 +64,12 @@ export default function Workout() {
       setActiveSession(s);
       setActiveType(stype);
       setView('live');
-    } catch (e) { setError(e.message); }
+    } catch (e) {
+      setError(e.message);
+      if (/already completed a workout today/i.test(e.message)) {
+        // surface a friendly explanation
+      }
+    }
   }
 
   if (!program) return <FullSpinner />;
@@ -260,10 +268,14 @@ function LiveWorkout({ session, sessionData, onDone, onCancel }) {
   // Fire notification + beep at the transition from >0 → 0.
   useEffect(() => {
     if (prevRestRemaining.current > 0 && restRemaining === 0 && restTotal > 0) {
-      beep();
-      vibrate([300, 120, 300]);
-      notify('Rest over', 'Get back to it 💪');
-      // Auto-clear so the banner disappears
+      // If the page is visible we beep + show our in-tab notification, then cancel the SW one
+      // so it doesn't double-fire. If the page is hidden, the SW takes over.
+      if (document.visibilityState === 'visible') {
+        beep();
+        vibrate([300, 120, 300]);
+        notify('Rest over', 'Get back to it 💪');
+        cancelRestNotification();
+      }
       setDraft((d) => ({ ...d, restEndTs: 0, restTotal: 0, restPaused: false }));
     }
     prevRestRemaining.current = restRemaining;
@@ -278,34 +290,38 @@ function LiveWorkout({ session, sessionData, onDone, onCancel }) {
   const elapsed = Math.max(0, Math.floor((now - startedAtMs) / 1000));
 
   function startRest(seconds) {
+    const endTs = Date.now() + seconds * 1000;
     setDraft((d) => ({
       ...d,
       restTotal: seconds,
-      restEndTs: Date.now() + seconds * 1000,
+      restEndTs: endTs,
       restPaused: false,
       restRemainingOnPause: 0,
     }));
+    scheduleRestNotification(endTs);
   }
 
   function pauseResumeRest() {
     setDraft((d) => {
       if (d.restPaused) {
-        // resume
         const remaining = d.restRemainingOnPause;
+        const newEnd = Date.now() + remaining * 1000;
+        scheduleRestNotification(newEnd);
         return {
           ...d,
           restPaused: false,
-          restEndTs: Date.now() + remaining * 1000,
+          restEndTs: newEnd,
           restRemainingOnPause: 0,
         };
       }
-      // pause
       const remaining = Math.max(0, Math.ceil((d.restEndTs - Date.now()) / 1000));
+      cancelRestNotification();
       return { ...d, restPaused: true, restRemainingOnPause: remaining };
     });
   }
 
   function resetRest() {
+    cancelRestNotification();
     setDraft((d) => ({ ...d, restEndTs: 0, restTotal: 0, restPaused: false, restRemainingOnPause: 0 }));
   }
 
@@ -343,6 +359,21 @@ function LiveWorkout({ session, sessionData, onDone, onCancel }) {
       });
       updateInput(draft.exIdx, setIdx, { logged: true });
       startRest(ex.rest);
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function cancelSession() {
+    if (!confirm('Cancel this workout? All logged sets in this session will be discarded.')) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await api.post(`/api/sessions/${session.id}/cancel`);
+      clearDraft();
+      onDone();
     } catch (e) {
       setError(e.message);
     } finally {
@@ -392,11 +423,11 @@ function LiveWorkout({ session, sessionData, onDone, onCancel }) {
     <div className="space-y-4 fade-in pb-24">
       <ErrorBanner error={error} onDismiss={() => setError(null)} />
 
-      <div className="flex items-center justify-between">
-        <button onClick={onCancel} className="btn btn-ghost px-2">
+      <div className="flex items-center justify-between gap-2">
+        <button onClick={onCancel} className="btn btn-ghost px-2" title="Back without cancelling">
           <ArrowLeft size={18} />
         </button>
-        <div className="text-center">
+        <div className="text-center flex-1 min-w-0">
           <div className="text-xs uppercase tracking-wider text-textmuted flex items-center justify-center gap-2">
             <span>{session.session_type}</span>
             <span className="text-textmuted/60">·</span>
@@ -404,9 +435,14 @@ function LiveWorkout({ session, sessionData, onDone, onCancel }) {
           </div>
           <div className="text-sm font-semibold">Exercise {draft.exIdx + 1} of {exercises.length}</div>
         </div>
-        <button onClick={() => setShowSummary(true)} disabled={busy} className="btn btn-primary text-xs">
-          Finish
-        </button>
+        <div className="flex gap-2">
+          <button onClick={cancelSession} disabled={busy} className="btn btn-secondary text-xs text-red-300" title="Cancel this session">
+            Cancel
+          </button>
+          <button onClick={() => setShowSummary(true)} disabled={busy} className="btn btn-primary text-xs">
+            Finish
+          </button>
+        </div>
       </div>
 
       {showSummary && (
