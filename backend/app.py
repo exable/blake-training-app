@@ -23,6 +23,9 @@ def create_app():
     app.config.from_object(Config)
 
     db.init_app(app)
+    uri = app.config["SQLALCHEMY_DATABASE_URI"]
+    scheme = uri.split("://", 1)[0] if "://" in uri else "?"
+    print(f"[db] scheme={scheme} | DATABASE_URL env present={bool(os.getenv('DATABASE_URL'))}", flush=True)
     jwt.init_app(app)
     migrate.init_app(app, db)
 
