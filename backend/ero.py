@@ -5,7 +5,7 @@ from datetime import date, datetime, timedelta
 from anthropic import Anthropic
 from extensions import db
 from models import (
-    WeightLog, WorkoutSession, WorkoutSet, MealLog, Meal,
+    User, WeightLog, WorkoutSession, WorkoutSet, MealLog, Meal,
     DailyCheckin, WeeklyCheckin, WaterLog, ExercisePrevious,
 )
 from program import ERO_SYSTEM_PROMPT, PROGRAM, DAY_TO_SESSION
@@ -44,8 +44,41 @@ def _format_working_weights(user_id: int) -> str:
     return "\n".join(out)
 
 
+def _format_meal_plan(user_id: int, today: date) -> str:
+    meals = Meal.query.filter_by(user_id=user_id, is_active=True).order_by(Meal.sort_order.asc()).all()
+    if not meals:
+        return "  (no meals configured)"
+    logs = {ml.meal_id: ml.eaten for ml in MealLog.query.filter_by(user_id=user_id, date=today).all()}
+    lines = []
+    total_kcal = total_p = total_c = total_f = 0
+    for m in meals:
+        total_kcal += m.calories or 0
+        total_p += m.protein or 0
+        total_c += m.carbs or 0
+        total_f += m.fat or 0
+        status = "EATEN" if logs.get(m.id) else "not eaten"
+        lines.append(
+            f"    {m.scheduled_time or '--:--'} — {m.name} "
+            f"[{m.calories}kcal / {m.protein}P / {m.carbs}C / {m.fat}F] — {status}"
+        )
+    lines.append(
+        f"  PLAN TOTALS (when all eaten): {total_kcal}kcal / {total_p}P / {total_c}C / {total_f}F"
+    )
+    return "\n".join(lines)
+
+
+def _format_targets(u: User) -> str:
+    return (
+        f"  Daily targets: {u.daily_calorie_target}kcal / "
+        f"{u.daily_protein_target}P / {u.daily_carb_target}C / {u.daily_fat_target}F\n"
+        f"  Water target: {u.daily_water_target_ml}ml/day\n"
+        f"  Starting weight: {u.starting_weight_kg}kg → Goal: {u.goal_weight_kg}kg (lean bulk)"
+    )
+
+
 def build_context(user_id: int) -> str:
     """Build a concise data-rich context block to prepend to Ero conversations."""
+    user = db.session.get(User, user_id)
     today = date.today()
     seven_days_ago = today - timedelta(days=14)
 
@@ -107,24 +140,32 @@ def build_context(user_id: int) -> str:
 
     today_session = DAY_TO_SESSION[today.weekday()]
 
-    ctx = f"""[BLAKE'S LIVE DATA — {today} ({today.strftime('%A')}, scheduled: {today_session})]
+    ctx = f"""[BLAKE'S LIVE DATA — {today} ({today.strftime('%A')}, scheduled session: {today_session})]
+
+GOALS & TARGETS:
+{_format_targets(user)}
 
 CURRENT PROGRAM (ULPPL — rest Wed & Sun):
 {_format_program()}
 
-CURRENT WORKING WEIGHTS (most recent logged sets per exercise):
+CURRENT WORKING WEIGHTS (most recent logged sets per exercise — this IS his program loading):
 {_format_working_weights(user_id)}
 
-Recent bodyweight entries:
+CURRENT MEAL PLAN (today's status — this IS his nutrition plan, not generic advice):
+{_format_meal_plan(user_id, today)}
+
+Today so far: {eaten_count}/{total_meals} meals eaten, {water_today}ml water (target {user.daily_water_target_ml}ml)
+
+Recent bodyweight entries (most recent first):
 {chr(10).join('  ' + w for w in weight_lines) if weight_lines else '  (none)'}
 
 Recent completed workouts (last 14 days):
-{chr(10).join('  ' + s for s in session_lines) if session_lines else '  (none)'}
+{chr(10).join('  ' + s for s in session_lines) if session_lines else '  (none yet)'}
 
-Today's nutrition: {eaten_count}/{total_meals} meals eaten, {water_today}ml water
 Recent daily check-ins:
 {chr(10).join('  ' + d for d in daily_lines) if daily_lines else '  (none)'}
 {weekly_block}
+[END OF LIVE DATA — everything above is the source of truth. Reference it. Never claim you don't have it.]
 """
     return ctx
 
@@ -142,7 +183,7 @@ def chat_with_ero(user_id: int, history: list[dict], user_message: str) -> str:
 
     resp = client.messages.create(
         model=Config.ANTHROPIC_MODEL,
-        max_tokens=1024,
+        max_tokens=2048,
         system=system,
         messages=messages,
     )
