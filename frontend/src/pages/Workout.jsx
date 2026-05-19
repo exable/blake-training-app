@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { ChevronRight, Play, Pause, RotateCcw, Check, Clock, Flame, History, ArrowLeft } from 'lucide-react';
+import { ChevronRight, Play, Pause, RotateCcw, Check, Clock, Flame, History, ArrowLeft, Trophy, X } from 'lucide-react';
 import { api } from '../lib/api.js';
 import Spinner, { FullSpinner } from '../components/Spinner.jsx';
 import ErrorBanner from '../components/ErrorBanner.jsx';
@@ -198,6 +198,7 @@ function LiveWorkout({ session, sessionData, onDone, onCancel }) {
   const [rest, setRest] = useState({ remaining: 0, total: 0, paused: false });
   const [error, setError] = useState(null);
   const [busy, setBusy] = useState(false);
+  const [showSummary, setShowSummary] = useState(false);
   const restRef = useRef(null);
 
   useEffect(() => {
@@ -249,15 +250,19 @@ function LiveWorkout({ session, sessionData, onDone, onCancel }) {
     }
   }
 
-  async function complete() {
+  async function logCardioDone() {
+    if (!ex) return;
     setBusy(true);
+    setError(null);
     try {
-      await api.post(`/api/sessions/${session.id}/complete`, {});
-      const full = await api.get(`/api/sessions/${session.id}`);
-      clearDraft();
-      // Show summary
-      window.alert(`Session complete!\n${full.sets.length} sets logged across ${new Set(full.sets.map(s => s.exercise_name)).size} exercises.`);
-      onDone();
+      await api.post(`/api/sessions/${session.id}/sets`, {
+        exercise_name: ex.name,
+        set_number: 1,
+        weight_kg: 0,
+        reps: 1,
+        rpe: null,
+      });
+      updateInput(draft.exIdx, 0, { logged: true, cardio: true });
     } catch (e) {
       setError(e.message);
     } finally {
@@ -281,7 +286,9 @@ function LiveWorkout({ session, sessionData, onDone, onCancel }) {
   if (!ex) return <div className="card">No exercises configured.</div>;
 
   const setIdxs = Array.from({ length: ex.sets }, (_, i) => i);
-  const allLogged = setIdxs.every((i) => inputsFor(draft.exIdx, i).logged);
+  const allLogged = ex.cardio
+    ? !!inputsFor(draft.exIdx, 0).logged
+    : setIdxs.every((i) => inputsFor(draft.exIdx, i).logged);
 
   return (
     <div className="space-y-4 fade-in pb-24">
@@ -295,10 +302,18 @@ function LiveWorkout({ session, sessionData, onDone, onCancel }) {
           <div className="text-xs uppercase tracking-wider text-textmuted">{session.session_type}</div>
           <div className="text-sm font-semibold">Exercise {draft.exIdx + 1} of {exercises.length}</div>
         </div>
-        <button onClick={complete} disabled={busy} className="btn btn-primary text-xs">
-          {busy ? <Spinner /> : 'Finish'}
+        <button onClick={() => setShowSummary(true)} disabled={busy} className="btn btn-primary text-xs">
+          Finish
         </button>
       </div>
+
+      {showSummary && (
+        <CompletionModal
+          sessionId={session.id}
+          onClose={() => setShowSummary(false)}
+          onDone={() => { clearDraft(); onDone(); }}
+        />
+      )}
 
       {/* Rest timer */}
       {rest.total > 0 && (
@@ -336,62 +351,71 @@ function LiveWorkout({ session, sessionData, onDone, onCancel }) {
           {allLogged && <Check size={20} className="text-accent" />}
         </div>
 
-        <div className="space-y-2">
-          {setIdxs.map((i) => {
-            const prev = prevSets[i];
-            const cur = inputsFor(draft.exIdx, i);
-            return (
-              <div key={i} className="rounded-xl bg-surface2 p-3 border border-line">
-                <div className="flex items-center justify-between mb-2">
-                  <div className="text-xs uppercase tracking-wider text-textmuted">Set {i + 1}</div>
-                  {prev && (
-                    <div className="text-[11px] text-textmuted">
-                      Last: <span className="text-white">{prev.weight_kg}kg × {prev.reps}</span>
-                    </div>
-                  )}
-                </div>
-                <div className="grid grid-cols-3 gap-2 items-end">
-                  <div>
-                    <label className="label">Weight</label>
-                    <input
-                      inputMode="decimal"
-                      type="number"
-                      step="0.5"
-                      placeholder={prev ? `${prev.weight_kg}` : 'kg'}
-                      value={cur.weight || ''}
-                      onChange={(e) => updateInput(draft.exIdx, i, { weight: e.target.value })}
-                      disabled={cur.logged}
-                      className="input text-base"
-                    />
-                  </div>
-                  <div>
-                    <label className="label">Reps</label>
-                    <input
-                      inputMode="numeric"
-                      type="number"
-                      placeholder={prev ? `${prev.reps}` : 'reps'}
-                      value={cur.reps || ''}
-                      onChange={(e) => updateInput(draft.exIdx, i, { reps: e.target.value })}
-                      disabled={cur.logged}
-                      className="input text-base"
-                    />
-                  </div>
-                  <div>
-                    {cur.logged ? (
-                      <div className="btn btn-secondary w-full">
-                        <Check size={16} /> Done
+        {ex.cardio ? (
+          <CardioRow
+            done={!!inputsFor(draft.exIdx, 0).logged}
+            duration={ex.rep_range}
+            busy={busy}
+            onDone={logCardioDone}
+          />
+        ) : (
+          <div className="space-y-2">
+            {setIdxs.map((i) => {
+              const prev = prevSets[i];
+              const cur = inputsFor(draft.exIdx, i);
+              return (
+                <div key={i} className="rounded-xl bg-surface2 p-3 border border-line">
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="text-xs uppercase tracking-wider text-textmuted">Set {i + 1}</div>
+                    {prev && (
+                      <div className="text-[11px] text-textmuted">
+                        Last: <span className="text-white">{prev.weight_kg}kg × {prev.reps}</span>
                       </div>
-                    ) : (
-                      <button onClick={() => logSet(i)} disabled={busy} className="btn btn-primary w-full">
-                        {busy ? <Spinner /> : 'Log'}
-                      </button>
                     )}
                   </div>
+                  <div className="grid grid-cols-3 gap-2 items-end">
+                    <div>
+                      <label className="label">Weight</label>
+                      <input
+                        inputMode="decimal"
+                        type="number"
+                        step="0.5"
+                        placeholder={prev ? `${prev.weight_kg}` : 'kg'}
+                        value={cur.weight || ''}
+                        onChange={(e) => updateInput(draft.exIdx, i, { weight: e.target.value })}
+                        disabled={cur.logged}
+                        className="input text-base"
+                      />
+                    </div>
+                    <div>
+                      <label className="label">Reps</label>
+                      <input
+                        inputMode="numeric"
+                        type="number"
+                        placeholder={prev ? `${prev.reps}` : 'reps'}
+                        value={cur.reps || ''}
+                        onChange={(e) => updateInput(draft.exIdx, i, { reps: e.target.value })}
+                        disabled={cur.logged}
+                        className="input text-base"
+                      />
+                    </div>
+                    <div>
+                      {cur.logged ? (
+                        <div className="btn btn-secondary w-full">
+                          <Check size={16} /> Done
+                        </div>
+                      ) : (
+                        <button onClick={() => logSet(i)} disabled={busy} className="btn btn-primary w-full">
+                          {busy ? <Spinner /> : 'Log'}
+                        </button>
+                      )}
+                    </div>
+                  </div>
                 </div>
-              </div>
-            );
-          })}
-        </div>
+              );
+            })}
+          </div>
+        )}
       </div>
 
       <div className="flex gap-2">
@@ -405,6 +429,140 @@ function LiveWorkout({ session, sessionData, onDone, onCancel }) {
         >
           Next exercise
         </button>
+      </div>
+    </div>
+  );
+}
+
+function CardioRow({ done, duration, busy, onDone }) {
+  return (
+    <div className="rounded-xl bg-surface2 p-4 border border-line flex items-center justify-between">
+      <div>
+        <div className="text-xs uppercase tracking-wider text-textmuted">Cardio</div>
+        <div className="text-sm font-medium mt-0.5">Complete {duration}</div>
+      </div>
+      {done ? (
+        <div className="btn btn-secondary">
+          <Check size={16} /> Done
+        </div>
+      ) : (
+        <button onClick={onDone} disabled={busy} className="btn btn-primary">
+          {busy ? <Spinner /> : 'Mark done'}
+        </button>
+      )}
+    </div>
+  );
+}
+
+function CompletionModal({ sessionId, onClose, onDone }) {
+  const [notes, setNotes] = useState('');
+  const [difficulty, setDifficulty] = useState(7);
+  const [result, setResult] = useState(null); // null = form, object = post-submit summary
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+
+  async function submit() {
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await api.post(`/api/sessions/${sessionId}/complete`, {
+        notes, difficulty,
+      });
+      setResult(res);
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-end md:items-center justify-center p-4 fade-in">
+      <div className="bg-surface border border-line rounded-2xl w-full max-w-md p-5 slide-up max-h-[90vh] overflow-y-auto">
+        {!result ? (
+          <>
+            <div className="flex items-center justify-between mb-4">
+              <div className="font-semibold">Finish session</div>
+              <button onClick={onClose} className="text-textmuted hover:text-white"><X size={18} /></button>
+            </div>
+            <ErrorBanner error={error} onDismiss={() => setError(null)} />
+            <div className="space-y-4">
+              <div>
+                <label className="label">How hard? <span className="text-white">{difficulty}/10</span></label>
+                <input
+                  type="range" min="1" max="10" value={difficulty}
+                  onChange={(e) => setDifficulty(parseInt(e.target.value, 10))}
+                  className="w-full accent-accent"
+                />
+                <div className="flex justify-between text-[10px] text-textmuted mt-1">
+                  <span>easy</span><span>brutal</span>
+                </div>
+              </div>
+              <div>
+                <label className="label">Notes</label>
+                <textarea
+                  className="input min-h-[80px]"
+                  placeholder="How did it feel? Anything off? Anything you crushed?"
+                  value={notes}
+                  onChange={(e) => setNotes(e.target.value)}
+                />
+              </div>
+            </div>
+            <div className="flex gap-2 mt-5">
+              <button onClick={onClose} className="btn btn-secondary flex-1">
+                Cancel
+              </button>
+              <button onClick={submit} disabled={busy} className="btn btn-primary flex-1">
+                {busy ? <Spinner /> : 'Complete session'}
+              </button>
+            </div>
+          </>
+        ) : (
+          <>
+            <div className="text-center mb-4">
+              <div className="w-14 h-14 mx-auto rounded-full bg-accent/10 border border-accent/30 flex items-center justify-center mb-3">
+                <Trophy size={26} className="text-accent" />
+              </div>
+              <div className="text-xl font-bold">Session complete</div>
+              <div className="text-xs text-textmuted mt-1">
+                {result.sets.length} sets · difficulty {result.difficulty}/10
+              </div>
+            </div>
+
+            {result.achievements?.length > 0 ? (
+              <div className="space-y-2 mb-4">
+                <div className="text-xs uppercase tracking-wider text-accent">Progressive overload wins</div>
+                {result.achievements.map((a) => (
+                  <div key={a.exercise} className="rounded-xl bg-surface2 border border-line p-3">
+                    <div className="font-semibold text-sm">{a.exercise}</div>
+                    <ul className="mt-1 space-y-0.5">
+                      {a.wins.map((w, i) => (
+                        <li key={i} className="text-xs text-textmuted flex gap-2">
+                          <span className="text-accent">▲</span><span>{w}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="text-center text-textmuted text-sm py-4 mb-2">
+                No new PRs this session — solid work though, consistency wins.
+              </div>
+            )}
+
+            {result.notes && (
+              <div className="rounded-xl bg-surface2 border border-line p-3 mb-4">
+                <div className="text-xs uppercase tracking-wider text-textmuted mb-1">Notes</div>
+                <div className="text-sm whitespace-pre-wrap">{result.notes}</div>
+              </div>
+            )}
+
+            <button onClick={onDone} className="btn btn-primary w-full">
+              Done
+            </button>
+          </>
+        )}
       </div>
     </div>
   );
@@ -430,6 +588,12 @@ function SessionDetail({ session, onBack }) {
           {new Date(session.started_at).toLocaleString()}
           {session.completed_at && ` · Completed ${new Date(session.completed_at).toLocaleTimeString()}`}
         </div>
+        {session.difficulty != null && (
+          <div className="text-xs text-textmuted mt-1">Difficulty: <span className="text-white">{session.difficulty}/10</span></div>
+        )}
+        {session.notes && (
+          <div className="text-sm mt-3 p-3 bg-surface2 rounded-xl border border-line whitespace-pre-wrap">{session.notes}</div>
+        )}
       </div>
       {Object.entries(groups).map(([ex, sets]) => (
         <div key={ex} className="card">

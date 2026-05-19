@@ -23,7 +23,7 @@ PROGRAM = {
         {"name": "Standing Bicep Cable Curl", "sets": 3, "rep_range": "10-15", "rpe": None, "rest": 90},
     ],
     "Lower": [
-        {"name": "Treadmill Warmup", "sets": 1, "rep_range": "10min", "rpe": None, "rest": 60},
+        {"name": "Treadmill Warmup", "sets": 1, "rep_range": "10min", "rpe": None, "rest": 60, "cardio": True},
         {"name": "Leg Extension", "sets": 3, "rep_range": "8-10", "rpe": None, "rest": 120},
         {"name": "Seated Leg Curl", "sets": 3, "rep_range": "8-10", "rpe": None, "rest": 120},
         {"name": "Hack Squat", "sets": 3, "rep_range": "7-10", "rpe": None, "rest": 180},

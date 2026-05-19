@@ -41,6 +41,7 @@ class WorkoutSession(db.Model):
     started_at = db.Column(db.DateTime, default=datetime.utcnow)
     completed_at = db.Column(db.DateTime, nullable=True)
     notes = db.Column(db.Text, default="")
+    difficulty = db.Column(db.Integer, nullable=True)  # 1–10 user-rated
 
     sets = db.relationship(
         "WorkoutSet", backref="session", cascade="all, delete-orphan", lazy="select"

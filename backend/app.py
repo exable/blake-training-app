@@ -3,6 +3,7 @@ import json
 import random
 from datetime import datetime, date, timedelta, time
 from flask import Flask, jsonify, request, send_from_directory
+from sqlalchemy import inspect, text
 from flask_jwt_extended import create_access_token, jwt_required, get_jwt_identity
 from sqlalchemy import func
 import cloudinary
@@ -25,7 +26,7 @@ def create_app():
     db.init_app(app)
     uri = app.config["SQLALCHEMY_DATABASE_URI"]
     scheme = uri.split("://", 1)[0] if "://" in uri else "?"
-    print(f"[db] scheme={scheme} | DATABASE_URL env present={bool(os.getenv('DATABASE_URL'))}", flush=True)
+    print(f"[db] scheme={scheme}", flush=True)
     jwt.init_app(app)
     migrate.init_app(app, db)
 
@@ -48,9 +49,24 @@ def create_app():
 
     with app.app_context():
         db.create_all()
+        ensure_schema()
         ensure_seed()
 
     return app
+
+
+def ensure_schema():
+    """Idempotent column migrations so old DBs catch up to the model."""
+    try:
+        insp = inspect(db.engine)
+        if "workout_sessions" in insp.get_table_names():
+            cols = {c["name"] for c in insp.get_columns("workout_sessions")}
+            if "difficulty" not in cols:
+                with db.engine.begin() as conn:
+                    conn.execute(text("ALTER TABLE workout_sessions ADD COLUMN difficulty INTEGER"))
+                print("[migration] added workout_sessions.difficulty", flush=True)
+    except Exception as e:
+        print(f"[migration] failed: {e}", flush=True)
 
 
 # ---------------------------------------------------------------------------
@@ -74,6 +90,7 @@ def serialize_session(s: WorkoutSession) -> dict:
         "started_at": s.started_at.isoformat() if s.started_at else None,
         "completed_at": s.completed_at.isoformat() if s.completed_at else None,
         "notes": s.notes,
+        "difficulty": getattr(s, "difficulty", None),
         "sets": [
             {
                 "id": st.id,
@@ -91,6 +108,71 @@ def serialize_session(s: WorkoutSession) -> dict:
 def get_previous_for(user_id: int, session_type: str) -> dict:
     rows = ExercisePrevious.query.filter_by(user_id=user_id, session_type=session_type).all()
     return {r.exercise_name: json.loads(r.sets_json) for r in rows}
+
+
+def compute_achievements(session: WorkoutSession) -> list[dict]:
+    """
+    Compare current session's sets vs the cached previous sets for each exercise.
+    Detects: heavier top set, extra set added, more reps at same weight, heavier same-set, etc.
+    Must be called BEFORE update_previous_from_session() so the cache still holds the prior values.
+    """
+    current_sets = (WorkoutSet.query.filter_by(session_id=session.id)
+                    .order_by(WorkoutSet.id.asc()).all())
+    by_ex: dict[str, list[WorkoutSet]] = {}
+    for s in current_sets:
+        by_ex.setdefault(s.exercise_name, []).append(s)
+
+    out = []
+    for ex_name, cur_sets in by_ex.items():
+        # Skip cardio placeholders (weight=0, reps<=1)
+        if all(c.weight_kg == 0 and c.reps <= 1 for c in cur_sets):
+            continue
+
+        prev_row = ExercisePrevious.query.filter_by(
+            user_id=session.user_id,
+            session_type=session.session_type,
+            exercise_name=ex_name,
+        ).first()
+        if not prev_row:
+            continue
+        prev_sets = json.loads(prev_row.sets_json)
+        if not prev_sets:
+            continue
+
+        wins: list[str] = []
+
+        cur_max = max(c.weight_kg for c in cur_sets)
+        prev_max = max(p["weight_kg"] for p in prev_sets)
+        if cur_max > prev_max:
+            wins.append(f"new top weight: {cur_max}kg (prev {prev_max}kg)")
+
+        if len(cur_sets) > len(prev_sets):
+            wins.append(f"added a set ({len(prev_sets)} → {len(cur_sets)})")
+
+        # Per-set comparison
+        for i, cs in enumerate(cur_sets):
+            if i >= len(prev_sets):
+                continue
+            ps = prev_sets[i]
+            if cs.weight_kg > ps["weight_kg"]:
+                wins.append(
+                    f"set {i + 1}: {cs.weight_kg}kg × {cs.reps} (prev {ps['weight_kg']}kg × {ps['reps']})"
+                )
+            elif cs.weight_kg == ps["weight_kg"] and cs.reps > ps["reps"]:
+                wins.append(
+                    f"set {i + 1}: {cs.reps} reps @ {cs.weight_kg}kg (prev {ps['reps']})"
+                )
+
+        # Volume: total reps × weight
+        cur_vol = sum(c.weight_kg * c.reps for c in cur_sets)
+        prev_vol = sum(p["weight_kg"] * p["reps"] for p in prev_sets)
+        if cur_vol > prev_vol * 1.02 and not wins:  # ≥2% volume bump even if no per-set win
+            wins.append(f"total volume up {int((cur_vol / prev_vol - 1) * 100)}%")
+
+        if wins:
+            out.append({"exercise": ex_name, "wins": wins})
+
+    return out
 
 
 def update_previous_from_session(session: WorkoutSession):
@@ -346,9 +428,18 @@ def register_routes(app: Flask):
         data = request.get_json(silent=True) or {}
         s.completed_at = datetime.utcnow()
         s.notes = data.get("notes", "") or s.notes
+        if data.get("difficulty") not in (None, ""):
+            s.difficulty = int(data.get("difficulty"))
+
+        # Achievements BEFORE updating cache so we still see the prior values
+        achievements = compute_achievements(s)
         update_previous_from_session(s)
         db.session.commit()
-        return serialize_session(s)
+
+        result = serialize_session(s)
+        result["achievements"] = achievements
+        result["difficulty"] = s.difficulty
+        return result
 
     @app.delete("/api/sessions/<int:sid>")
     @jwt_required()
