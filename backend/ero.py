@@ -28,6 +28,150 @@ def _format_program() -> str:
     return "\n".join(lines)
 
 
+def _format_weight_trend(user_id: int) -> str:
+    """7d / 14d rolling avg + week-over-week delta."""
+    today = date.today()
+    rows = (WeightLog.query.filter_by(user_id=user_id)
+            .order_by(WeightLog.logged_at.desc()).all())
+    if not rows:
+        return "  (no bodyweight logged yet)"
+
+    def avg_window(days: int):
+        cutoff = datetime.utcnow() - timedelta(days=days)
+        window = [r.weight_kg for r in rows if r.logged_at >= cutoff]
+        return sum(window) / len(window) if window else None
+
+    latest = rows[0].weight_kg
+    earliest = rows[-1].weight_kg
+    a7 = avg_window(7)
+    a14 = avg_window(14)
+
+    # Week-over-week: avg of last 7 days vs avg of the 7 days before that
+    prev_window = [r.weight_kg for r in rows
+                   if timedelta(days=7) <= (datetime.utcnow() - r.logged_at) <= timedelta(days=14)]
+    prev_avg = sum(prev_window) / len(prev_window) if prev_window else None
+    wow_delta = (a7 - prev_avg) if (a7 is not None and prev_avg is not None) else None
+
+    # Has weight been stuck for a full week?
+    week_window = [r.weight_kg for r in rows if (datetime.utcnow() - r.logged_at) <= timedelta(days=8)]
+    week_range = (max(week_window) - min(week_window)) if len(week_window) >= 3 else None
+    stuck = (week_range is not None and week_range < 0.4 and len(week_window) >= 3)
+
+    parts = [f"  latest: {latest}kg",
+             f"earliest logged: {earliest}kg"]
+    if a7 is not None: parts.append(f"7d avg: {a7:.2f}kg")
+    if a14 is not None: parts.append(f"14d avg: {a14:.2f}kg")
+    if wow_delta is not None:
+        sign = "+" if wow_delta >= 0 else ""
+        parts.append(f"week-over-week: {sign}{wow_delta:.2f}kg")
+    if stuck:
+        parts.append("⚠ STALLED (no movement >0.4kg over last week)")
+    return "  " + " · ".join(parts)
+
+
+def _format_schedule_adherence(user_id: int) -> str:
+    """Last 14 days: scheduled session vs trained_today answer + actual workout existence."""
+    today = date.today()
+    out = []
+    sessions_by_date: dict = {}
+    sessions = (WorkoutSession.query.filter(
+        WorkoutSession.user_id == user_id,
+        WorkoutSession.started_at >= datetime.combine(today - timedelta(days=14), datetime.min.time()),
+    ).all())
+    for s in sessions:
+        sessions_by_date.setdefault(s.started_at.date(), []).append(s)
+
+    dailies = {c.date: c for c in DailyCheckin.query.filter(
+        DailyCheckin.user_id == user_id,
+        DailyCheckin.date >= today - timedelta(days=14),
+    ).all()}
+
+    missed = 0
+    trained = 0
+    for i in range(14, 0, -1):
+        d = today - timedelta(days=i)
+        scheduled = DAY_TO_SESSION_BY_NAME(d.weekday())
+        completed = any(s.completed_at for s in sessions_by_date.get(d, []))
+        daily_ans = dailies.get(d)
+        ans = daily_ans.trained_today if daily_ans else None
+
+        marker = "·"
+        if scheduled == "Rest":
+            marker = "💤"
+        elif completed:
+            marker = "✓"; trained += 1
+        elif ans == "Yes":
+            marker = "?"  # said yes but no session logged
+        elif ans in ("No", None):
+            if scheduled != "Rest":
+                marker = "✗"; missed += 1
+
+        out.append(f"{d.strftime('%a %d')}: {scheduled} {marker}")
+
+    summary = f"  Last 14 days — trained: {trained}, missed: {missed}"
+    return summary + "\n  " + "\n  ".join(out)
+
+
+def DAY_TO_SESSION_BY_NAME(weekday: int) -> str:
+    return DAY_TO_SESSION[weekday]
+
+
+def _format_stalls(user_id: int) -> str:
+    """Detect exercises whose top working weight hasn't moved in the last 2-3 logged sessions."""
+    out = []
+    # Pull all sets in last 60 days, group by exercise
+    cutoff = datetime.utcnow() - timedelta(days=60)
+    rows = (db.session.query(WorkoutSet, WorkoutSession)
+            .join(WorkoutSession, WorkoutSession.id == WorkoutSet.session_id)
+            .filter(WorkoutSession.user_id == user_id,
+                    WorkoutSet.logged_at >= cutoff)
+            .order_by(WorkoutSet.logged_at.asc()).all())
+    by_ex: dict[str, list] = {}
+    for st, sess in rows:
+        if st.weight_kg <= 0:
+            continue  # skip cardio / bodyweight markers
+        by_ex.setdefault(st.exercise_name, []).append((sess.started_at, st.weight_kg, st.reps))
+
+    for ex, entries in by_ex.items():
+        # Compute top weight per distinct session date
+        by_session_top: dict = {}
+        for ts, wt, reps in entries:
+            d = ts.date()
+            by_session_top[d] = max(by_session_top.get(d, 0), wt)
+        sessions_sorted = sorted(by_session_top.items())
+        if len(sessions_sorted) < 2:
+            continue
+        last_two = [w for _, w in sessions_sorted[-3:]]  # last 2-3 session top weights
+        if len(set(last_two)) == 1 and len(last_two) >= 2:
+            out.append(f"  {ex}: stalled at {last_two[-1]}kg over last {len(last_two)} sessions")
+
+    return "\n".join(out) if out else "  (no stalls detected)"
+
+
+def _format_recent_prs(user_id: int) -> str:
+    """Detect recent top-weight increases in last 14 days."""
+    out = []
+    cutoff = datetime.utcnow() - timedelta(days=14)
+    rows = (db.session.query(WorkoutSet, WorkoutSession)
+            .join(WorkoutSession, WorkoutSession.id == WorkoutSet.session_id)
+            .filter(WorkoutSession.user_id == user_id,
+                    WorkoutSet.logged_at >= cutoff)
+            .order_by(WorkoutSet.logged_at.asc()).all())
+    by_ex: dict[str, list] = {}
+    for st, sess in rows:
+        if st.weight_kg <= 0:
+            continue
+        by_ex.setdefault(st.exercise_name, []).append((sess.started_at, st.weight_kg))
+    for ex, entries in by_ex.items():
+        entries_sorted = sorted(entries)
+        max_w = max(w for _, w in entries_sorted)
+        latest = entries_sorted[-1]
+        if latest[1] == max_w and len([w for _, w in entries_sorted if w == max_w]) == 1:
+            # First time hitting this weight
+            out.append(f"  {ex}: new top {latest[1]}kg ({latest[0].strftime('%a %d %b')})")
+    return "\n".join(out) if out else "  (no new top weights in last 14d)"
+
+
 def _format_working_weights(user_id: int) -> str:
     rows = ExercisePrevious.query.filter_by(user_id=user_id).all()
     if not rows:
@@ -156,7 +300,19 @@ CURRENT MEAL PLAN (today's status — this IS his nutrition plan, not generic ad
 
 Today so far: {eaten_count}/{total_meals} meals eaten, {water_today}ml water (target {user.daily_water_target_ml}ml)
 
-Recent bodyweight entries (most recent first):
+BODYWEIGHT TREND:
+{_format_weight_trend(user_id)}
+
+SCHEDULE ADHERENCE (last 14 days — ✓=trained, ✗=missed, 💤=rest, ?=said trained but no session logged):
+{_format_schedule_adherence(user_id)}
+
+STALLED LIFTS (top weight unchanged in last 2-3 sessions — flag if relevant):
+{_format_stalls(user_id)}
+
+RECENT TOP-WEIGHT HITS (last 14 days):
+{_format_recent_prs(user_id)}
+
+Raw recent bodyweight entries (most recent first):
 {chr(10).join('  ' + w for w in weight_lines) if weight_lines else '  (none)'}
 
 Recent completed workouts (last 14 days):
@@ -234,6 +390,95 @@ def generate_weekly_response(user_id: int, weekly: WeeklyCheckin) -> str:
         messages=[{"role": "user", "content": prompt}],
     )
     return "".join(block.text for block in resp.content if getattr(block, "type", "") == "text")
+
+
+def proactive_check(user_id: int) -> str | None:
+    """
+    Called when Blake opens the app. Ero reviews the live data and decides whether
+    to drop a proactive message. If nothing's worth saying, returns None.
+
+    Throttled: at most one proactive nudge every 6 hours.
+    """
+    last_asst = (ChatMessage.query.filter_by(user_id=user_id, role="assistant")
+                 .order_by(ChatMessage.created_at.desc()).first())
+    if last_asst and (datetime.utcnow() - last_asst.created_at) < timedelta(hours=6):
+        return None
+
+    client = _client()
+    if not client:
+        return None
+
+    context = build_context(user_id)
+    system = ERO_SYSTEM_PROMPT + "\n\n" + context
+
+    prompt = (
+        "You're Blake's PT. He just opened the app. Review his live data above.\n\n"
+        "Is there ANYTHING worth proactively flagging to him right now — something a real "
+        "coach would text his client about unprompted? Examples:\n"
+        "- A lift stalled at the same weight for 2+ sessions → suggest fix\n"
+        "- A scheduled session he missed → reschedule it\n"
+        "- Bodyweight stalled a full week → tell him to add food, suggest where\n"
+        "- New top weight he hasn't been congratulated for → brief celebration\n"
+        "- Pattern across daily check-ins (low sleep, low energy, low nutrition adherence) → address it\n"
+        "- Today's planned session not yet started after 1pm on a training day → prompt him\n\n"
+        "RULES:\n"
+        "- Be SPECIFIC. Cite the exact lift, weight, date, or value from the data.\n"
+        "- Be SHORT. 1–3 sentences max. This is a text from his coach, not an essay.\n"
+        "- Be the COACH voice — direct, slightly pushy, warm. Use 'man'/'bro'/'g'.\n"
+        "- One topic only. Don't cram multiple observations into one message.\n"
+        "- If nothing significant — and 'nothing significant' is the right call most days — "
+        "respond with exactly: SKIP\n"
+        "- Do NOT send generic check-ins like 'how's it going?'. Only data-driven substance."
+    )
+
+    try:
+        resp = client.messages.create(
+            model=Config.ANTHROPIC_MODEL,
+            max_tokens=400,
+            system=system,
+            messages=[{"role": "user", "content": prompt}],
+        )
+    except Exception as e:
+        print(f"[ero] proactive_check failed: {e}", flush=True)
+        return None
+
+    text = "".join(b.text for b in resp.content if getattr(b, "type", "") == "text").strip()
+    if not text or text.upper().startswith("SKIP") or len(text) < 25:
+        return None
+
+    msg = ChatMessage(user_id=user_id, role="assistant", content=text)
+    db.session.add(msg)
+    db.session.commit()
+    return text
+
+
+def chat_with_ero_multimodal(user_id: int, history: list[dict], user_message: str,
+                              image_url: str | None = None) -> str:
+    """Like chat_with_ero but accepts an optional image URL (Cloudinary)."""
+    client = _client()
+    if not client:
+        return "(Ero is offline — ANTHROPIC_API_KEY not configured.)"
+
+    context = build_context(user_id)
+    system = ERO_SYSTEM_PROMPT + "\n\n" + context
+
+    user_content: list[dict] = []
+    if image_url:
+        user_content.append({
+            "type": "image",
+            "source": {"type": "url", "url": image_url},
+        })
+    user_content.append({"type": "text", "text": user_message or "(image)"})
+
+    messages = list(history) + [{"role": "user", "content": user_content}]
+
+    resp = client.messages.create(
+        model=Config.ANTHROPIC_MODEL,
+        max_tokens=2048,
+        system=system,
+        messages=messages,
+    )
+    return "".join(b.text for b in resp.content if getattr(b, "type", "") == "text")
 
 
 def generate_daily_acknowledgement(user_id: int, checkin: DailyCheckin) -> str:

@@ -16,7 +16,10 @@ from models import (
     DailyCheckin, WeeklyCheckin, ProgressPhoto, ChatMessage, ExercisePrevious,
 )
 from program import PROGRAM, DAY_TO_SESSION, SEED_MEALS, RECENT_LIFTS
-from ero import chat_with_ero, generate_daily_acknowledgement, generate_weekly_response
+from ero import (
+    chat_with_ero, chat_with_ero_multimodal,
+    generate_daily_acknowledgement, generate_weekly_response, proactive_check,
+)
 
 
 def create_app():
@@ -217,16 +220,24 @@ def ensure_seed():
         db.session.commit()
         print(f"[seed] Seeded {len(SEED_MEALS)} meals.")
 
-    # Seed exercise previous if none
-    if ExercisePrevious.query.filter_by(user_id=user.id).count() == 0:
-        for stype, exs in RECENT_LIFTS.items():
-            for ex_name, sets_list in exs.items():
-                db.session.add(ExercisePrevious(
-                    user_id=user.id, session_type=stype, exercise_name=ex_name,
-                    sets_json=json.dumps(sets_list),
-                ))
+    # Seed/back-fill exercise previous — idempotent. Only inserts entries that don't already exist
+    # so user-logged sessions are NEVER overwritten.
+    added = 0
+    for stype, exs in RECENT_LIFTS.items():
+        for ex_name, sets_list in exs.items():
+            existing = ExercisePrevious.query.filter_by(
+                user_id=user.id, session_type=stype, exercise_name=ex_name,
+            ).first()
+            if existing:
+                continue
+            db.session.add(ExercisePrevious(
+                user_id=user.id, session_type=stype, exercise_name=ex_name,
+                sets_json=json.dumps(sets_list),
+            ))
+            added += 1
+    if added:
         db.session.commit()
-        print("[seed] Seeded ExercisePrevious cache.")
+        print(f"[seed] Added/backfilled {added} ExercisePrevious rows.")
 
     # Seed starting bodyweight if none
     if WeightLog.query.filter_by(user_id=user.id).count() == 0:
@@ -383,6 +394,18 @@ def register_routes(app: Flask):
             q = q.filter_by(session_type=stype)
         sessions = q.order_by(WorkoutSession.started_at.desc()).limit(100).all()
         return [serialize_session(s) for s in sessions]
+
+    @app.get("/api/sessions/in-progress")
+    @jwt_required()
+    def in_progress_session():
+        u = current_user()
+        s = (WorkoutSession.query
+             .filter(WorkoutSession.user_id == u.id, WorkoutSession.completed_at == None)
+             .order_by(WorkoutSession.started_at.desc())
+             .first())
+        if not s:
+            return {"in_progress": False}
+        return {"in_progress": True, "session": serialize_session(s)}
 
     @app.get("/api/sessions/<int:sid>")
     @jwt_required()
@@ -805,19 +828,28 @@ def register_routes(app: Flask):
         u = current_user()
         data = request.get_json(force=True)
         content = (data.get("content") or "").strip()
-        if not content:
+        image_url = data.get("image_url")  # optional Cloudinary URL
+        if not content and not image_url:
             return {"error": "empty"}, 400
 
-        user_msg = ChatMessage(user_id=u.id, role="user", content=content)
+        # If there's an image attached, embed a marker in the saved user message
+        saved_user_content = content
+        if image_url:
+            saved_user_content = (content + "\n" if content else "") + f"[image] {image_url}"
+
+        user_msg = ChatMessage(user_id=u.id, role="user", content=saved_user_content)
         db.session.add(user_msg)
         db.session.commit()
 
         history_rows = (ChatMessage.query.filter_by(user_id=u.id)
                         .order_by(ChatMessage.created_at.asc()).limit(40).all())
-        history = [{"role": r.role, "content": r.content} for r in history_rows[:-1]]  # exclude current
+        history = [{"role": r.role, "content": r.content} for r in history_rows[:-1]]
 
         try:
-            reply = chat_with_ero(u.id, history, content)
+            if image_url:
+                reply = chat_with_ero_multimodal(u.id, history, content, image_url=image_url)
+            else:
+                reply = chat_with_ero(u.id, history, content)
         except Exception as e:
             reply = f"(Ero had trouble responding: {e})"
 
@@ -825,9 +857,27 @@ def register_routes(app: Flask):
         db.session.add(a)
         db.session.commit()
         return {
-            "user_message": {"id": user_msg.id, "role": "user", "content": content, "created_at": user_msg.created_at.isoformat()},
+            "user_message": {"id": user_msg.id, "role": "user", "content": saved_user_content, "created_at": user_msg.created_at.isoformat()},
             "assistant_message": {"id": a.id, "role": "assistant", "content": reply, "created_at": a.created_at.isoformat()},
         }
+
+    @app.post("/api/chat/image-upload")
+    @jwt_required()
+    def chat_image_upload():
+        if not Config.CLOUDINARY_CLOUD_NAME:
+            return {"error": "Cloudinary not configured"}, 500
+        f = request.files.get("file")
+        if not f:
+            return {"error": "No file uploaded"}, 400
+        result = cloudinary.uploader.upload(f, folder="blake/chat")
+        return {"url": result["secure_url"]}
+
+    @app.post("/api/chat/proactive-check")
+    @jwt_required()
+    def chat_proactive_check():
+        u = current_user()
+        text = proactive_check(u.id)
+        return {"delivered": bool(text), "content": text}
 
     # -------- EXPORT --------
     @app.get("/api/export")

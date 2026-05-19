@@ -1,9 +1,17 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { ChevronRight, Play, Pause, RotateCcw, Check, Clock, Flame, History, ArrowLeft, Trophy, X } from 'lucide-react';
+import { ChevronRight, Play, Pause, RotateCcw, Check, Clock, Flame, History, ArrowLeft, Trophy, X, Bell } from 'lucide-react';
 import { api } from '../lib/api.js';
 import Spinner, { FullSpinner } from '../components/Spinner.jsx';
 import ErrorBanner from '../components/ErrorBanner.jsx';
 import useDraft from '../lib/useDraft.js';
+import { ensureNotifyPermission, notify, beep, vibrate } from '../lib/notify.js';
+
+function fmtClock(totalSec) {
+  const s = Math.max(0, Math.floor(totalSec));
+  const m = Math.floor(s / 60);
+  const r = s % 60;
+  return `${String(m).padStart(2, '0')}:${String(r).padStart(2, '0')}`;
+}
 
 const SESSION_TYPES = ['Upper', 'Lower', 'Push', 'Pull', 'Legs'];
 
@@ -22,6 +30,13 @@ export default function Workout() {
       const p = await api.get('/api/program');
       setProgram(p);
       setActiveType(p._today === 'Rest' ? 'Upper' : p._today);
+      // Resume any in-progress session
+      const ip = await api.get('/api/sessions/in-progress');
+      if (ip.in_progress) {
+        setActiveSession(ip.session);
+        setActiveType(ip.session.session_type);
+        setView('live');
+      }
     } catch (e) {
       setError(e.message);
     }
@@ -191,23 +206,108 @@ function FilterChip({ active, onClick, children }) {
 function LiveWorkout({ session, sessionData, onDone, onCancel }) {
   const exercises = sessionData?.exercises || [];
   const previous = sessionData?.previous || {};
+  // Draft state is persisted in localStorage; this is what survives an app close.
+  // - inputs: per-set values (weight/reps/logged)
+  // - prefilled: per-exercise, have we copied last session's values into inputs yet?
+  // - restEndTs / restTotal / restPaused / restRemainingOnPause: TIMESTAMP-based timer so it
+  //   keeps counting correctly when the app is backgrounded / closed and reopened later.
   const [draft, setDraft, clearDraft] = useDraft(`live-${session.id}`, {
     exIdx: 0,
-    inputs: {}, // { [exIdx]: { [setIdx]: { weight, reps, rpe, logged } } }
+    inputs: {},
+    restEndTs: 0,
+    restTotal: 0,
+    restPaused: false,
+    restRemainingOnPause: 0,
+    notifyAsked: false,
   });
-  const [rest, setRest] = useState({ remaining: 0, total: 0, paused: false });
+
+  const [now, setNow] = useState(() => Date.now());  // ticks every second for re-renders
   const [error, setError] = useState(null);
   const [busy, setBusy] = useState(false);
   const [showSummary, setShowSummary] = useState(false);
-  const restRef = useRef(null);
+  const prevRestRemaining = useRef(null);
 
+  // Single 1s tick that drives BOTH the elapsed clock and the rest timer.
   useEffect(() => {
-    if (rest.remaining <= 0 || rest.paused) return;
-    restRef.current = setInterval(() => {
-      setRest((r) => ({ ...r, remaining: Math.max(0, r.remaining - 1) }));
-    }, 1000);
-    return () => clearInterval(restRef.current);
-  }, [rest.remaining, rest.paused]);
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    const onVis = () => setNow(Date.now());
+    document.addEventListener('visibilitychange', onVis);
+    window.addEventListener('focus', onVis);
+    return () => {
+      clearInterval(id);
+      document.removeEventListener('visibilitychange', onVis);
+      window.removeEventListener('focus', onVis);
+    };
+  }, []);
+
+  // Ask for notification permission once.
+  useEffect(() => {
+    if (!draft.notifyAsked) {
+      ensureNotifyPermission().finally(() =>
+        setDraft((d) => ({ ...d, notifyAsked: true }))
+      );
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Derive rest-timer state from draft + now (single source of truth).
+  const restTotal = draft.restTotal || 0;
+  const restRemaining = draft.restPaused
+    ? draft.restRemainingOnPause
+    : Math.max(0, Math.ceil((draft.restEndTs - now) / 1000));
+  const restActive = restTotal > 0 && restRemaining > 0;
+
+  // Fire notification + beep at the transition from >0 → 0.
+  useEffect(() => {
+    if (prevRestRemaining.current > 0 && restRemaining === 0 && restTotal > 0) {
+      beep();
+      vibrate([300, 120, 300]);
+      notify('Rest over', 'Get back to it 💪');
+      // Auto-clear so the banner disappears
+      setDraft((d) => ({ ...d, restEndTs: 0, restTotal: 0, restPaused: false }));
+    }
+    prevRestRemaining.current = restRemaining;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [restRemaining, restTotal]);
+
+  // Total session elapsed
+  const startedAtMs = useMemo(
+    () => (session.started_at ? new Date(session.started_at).getTime() : Date.now()),
+    [session.started_at]
+  );
+  const elapsed = Math.max(0, Math.floor((now - startedAtMs) / 1000));
+
+  function startRest(seconds) {
+    setDraft((d) => ({
+      ...d,
+      restTotal: seconds,
+      restEndTs: Date.now() + seconds * 1000,
+      restPaused: false,
+      restRemainingOnPause: 0,
+    }));
+  }
+
+  function pauseResumeRest() {
+    setDraft((d) => {
+      if (d.restPaused) {
+        // resume
+        const remaining = d.restRemainingOnPause;
+        return {
+          ...d,
+          restPaused: false,
+          restEndTs: Date.now() + remaining * 1000,
+          restRemainingOnPause: 0,
+        };
+      }
+      // pause
+      const remaining = Math.max(0, Math.ceil((d.restEndTs - Date.now()) / 1000));
+      return { ...d, restPaused: true, restRemainingOnPause: remaining };
+    });
+  }
+
+  function resetRest() {
+    setDraft((d) => ({ ...d, restEndTs: 0, restTotal: 0, restPaused: false, restRemainingOnPause: 0 }));
+  }
 
   const ex = exercises[draft.exIdx];
   const prevSets = ex ? (previous[ex.name] || []) : [];
@@ -242,7 +342,7 @@ function LiveWorkout({ session, sessionData, onDone, onCancel }) {
         rpe: cur.rpe ? parseFloat(cur.rpe) : null,
       });
       updateInput(draft.exIdx, setIdx, { logged: true });
-      setRest({ remaining: ex.rest, total: ex.rest, paused: false });
+      startRest(ex.rest);
     } catch (e) {
       setError(e.message);
     } finally {
@@ -273,13 +373,11 @@ function LiveWorkout({ session, sessionData, onDone, onCancel }) {
   function next() {
     if (draft.exIdx < exercises.length - 1) {
       setDraft({ ...draft, exIdx: draft.exIdx + 1 });
-      setRest({ remaining: 0, total: 0, paused: false });
     }
   }
   function prev() {
     if (draft.exIdx > 0) {
       setDraft({ ...draft, exIdx: draft.exIdx - 1 });
-      setRest({ remaining: 0, total: 0, paused: false });
     }
   }
 
@@ -299,7 +397,11 @@ function LiveWorkout({ session, sessionData, onDone, onCancel }) {
           <ArrowLeft size={18} />
         </button>
         <div className="text-center">
-          <div className="text-xs uppercase tracking-wider text-textmuted">{session.session_type}</div>
+          <div className="text-xs uppercase tracking-wider text-textmuted flex items-center justify-center gap-2">
+            <span>{session.session_type}</span>
+            <span className="text-textmuted/60">·</span>
+            <span className="tabular-nums text-accent">{fmtClock(elapsed)}</span>
+          </div>
           <div className="text-sm font-semibold">Exercise {draft.exIdx + 1} of {exercises.length}</div>
         </div>
         <button onClick={() => setShowSummary(true)} disabled={busy} className="btn btn-primary text-xs">
@@ -316,26 +418,36 @@ function LiveWorkout({ session, sessionData, onDone, onCancel }) {
       )}
 
       {/* Rest timer */}
-      {rest.total > 0 && (
-        <div className="card flex items-center justify-between bg-accent/5 border-accent/30">
+      {restActive && (
+        <div className="card flex items-center justify-between bg-accent/5 border-accent/30 pulse-ring">
           <div className="flex items-center gap-3">
             <Clock size={20} className="text-accent" />
             <div>
-              <div className="text-xs text-textmuted uppercase">Rest</div>
-              <div className="text-3xl font-bold tabular-nums">
-                {String(Math.floor(rest.remaining / 60)).padStart(2, '0')}:{String(rest.remaining % 60).padStart(2, '0')}
-              </div>
+              <div className="text-xs text-textmuted uppercase">Rest{draft.restPaused ? ' (paused)' : ''}</div>
+              <div className="text-3xl font-bold tabular-nums">{fmtClock(restRemaining)}</div>
             </div>
           </div>
           <div className="flex gap-2">
-            <button onClick={() => setRest((r) => ({ ...r, paused: !r.paused }))} className="btn btn-secondary px-3">
-              {rest.paused ? <Play size={16} /> : <Pause size={16} />}
+            <button onClick={pauseResumeRest} className="btn btn-secondary px-3">
+              {draft.restPaused ? <Play size={16} /> : <Pause size={16} />}
             </button>
-            <button onClick={() => setRest({ remaining: 0, total: 0, paused: false })} className="btn btn-secondary px-3">
+            <button onClick={resetRest} className="btn btn-secondary px-3">
               <RotateCcw size={16} />
             </button>
           </div>
         </div>
+      )}
+
+      {/* Re-prompt notification permission if user dismissed it */}
+      {typeof Notification !== 'undefined' && Notification.permission === 'default' && (
+        <button
+          onClick={() => ensureNotifyPermission()}
+          className="card card-hover w-full flex items-center gap-3 text-left text-sm"
+        >
+          <Bell size={16} className="text-accent" />
+          <span className="flex-1">Enable rest-timer notifications</span>
+          <ChevronRight size={14} className="text-textmuted" />
+        </button>
       )}
 
       <div className="card">
