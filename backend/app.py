@@ -442,19 +442,6 @@ def register_routes(app: Flask):
         s = WorkoutSession.query.filter_by(id=sid, user_id=u.id).first_or_404()
         return serialize_session(s)
 
-    @app.get("/api/sessions/in-progress")
-    @jwt_required()
-    def in_progress_session():
-        u = current_user()
-        s = (WorkoutSession.query
-             .filter(WorkoutSession.user_id == u.id,
-                     WorkoutSession.completed_at == None)
-             .order_by(WorkoutSession.started_at.desc())
-             .first())
-        if not s:
-            return {"in_progress": False}
-        return {"in_progress": True, "session": serialize_session(s)}
-
     @app.post("/api/sessions")
     @jwt_required()
     def start_session():
