@@ -101,13 +101,21 @@ def todays_session_type() -> str:
     return DAY_TO_SESSION[date.today().weekday()]
 
 
+def iso_utc(dt):
+    """Serialize a naive UTC datetime with explicit 'Z' suffix so JS parses it as UTC."""
+    if dt is None:
+        return None
+    # Strip any tz and force Z (we store UTC naively via datetime.utcnow())
+    return dt.replace(tzinfo=None).isoformat() + "Z"
+
+
 def serialize_session(s: WorkoutSession) -> dict:
     sets = WorkoutSet.query.filter_by(session_id=s.id).order_by(WorkoutSet.id.asc()).all()
     return {
         "id": s.id,
         "session_type": s.session_type,
-        "started_at": s.started_at.isoformat() if s.started_at else None,
-        "completed_at": s.completed_at.isoformat() if s.completed_at else None,
+        "started_at": iso_utc(s.started_at),
+        "completed_at": iso_utc(s.completed_at),
         "notes": s.notes,
         "difficulty": getattr(s, "difficulty", None),
         "sets": [
@@ -118,7 +126,7 @@ def serialize_session(s: WorkoutSession) -> dict:
                 "weight_kg": st.weight_kg,
                 "reps": st.reps,
                 "rpe": st.rpe,
-                "logged_at": st.logged_at.isoformat() if st.logged_at else None,
+                "logged_at": iso_utc(st.logged_at),
             } for st in sets
         ],
     }
@@ -434,12 +442,26 @@ def register_routes(app: Flask):
         s = WorkoutSession.query.filter_by(id=sid, user_id=u.id).first_or_404()
         return serialize_session(s)
 
+    @app.get("/api/sessions/in-progress")
+    @jwt_required()
+    def in_progress_session():
+        u = current_user()
+        s = (WorkoutSession.query
+             .filter(WorkoutSession.user_id == u.id,
+                     WorkoutSession.completed_at == None)
+             .order_by(WorkoutSession.started_at.desc())
+             .first())
+        if not s:
+            return {"in_progress": False}
+        return {"in_progress": True, "session": serialize_session(s)}
+
     @app.post("/api/sessions")
     @jwt_required()
     def start_session():
         u = current_user()
         data = request.get_json(force=True)
         stype = data.get("session_type") or todays_session_type()
+        force_new = bool(data.get("force_new"))
         today = date.today()
 
         # 1-completed-per-day rule
@@ -451,20 +473,37 @@ def register_routes(app: Flask):
         if completed_today:
             return {"error": "You've already completed a workout today."}, 400
 
-        # Only one in-progress session at a time — auto-discard any previous in-progress
+        # If there's already an in-progress session, return it (don't silently nuke its data)
         existing = (WorkoutSession.query
                     .filter(WorkoutSession.user_id == u.id,
                             WorkoutSession.completed_at == None)
-                    .all())
-        for old in existing:
-            db.session.delete(old)
-        if existing:
+                    .order_by(WorkoutSession.started_at.desc())
+                    .first())
+        if existing and not force_new:
+            # Same type → resume. Different type → tell the client to confirm.
+            if existing.session_type == stype:
+                out = serialize_session(existing)
+                out["resumed"] = True
+                return out
+            return {
+                "error": (
+                    f"You already have a {existing.session_type} session in progress "
+                    "started earlier. Cancel it first, or pass force_new=true to discard it."
+                ),
+                "active_session_type": existing.session_type,
+                "active_session_id": existing.id,
+            }, 409
+
+        if existing and force_new:
+            db.session.delete(existing)
             db.session.commit()
 
         s = WorkoutSession(user_id=u.id, session_type=stype, started_at=datetime.utcnow())
         db.session.add(s)
         db.session.commit()
-        return serialize_session(s)
+        out = serialize_session(s)
+        out["resumed"] = False
+        return out
 
     @app.post("/api/sessions/<int:sid>/cancel")
     @jwt_required()

@@ -62,13 +62,23 @@ export default function Workout() {
     try {
       const s = await api.post('/api/sessions', { session_type: stype });
       setActiveSession(s);
-      setActiveType(stype);
+      setActiveType(s.session_type);
       setView('live');
     } catch (e) {
-      setError(e.message);
-      if (/already completed a workout today/i.test(e.message)) {
-        // surface a friendly explanation
+      // 409 from backend means a different-type session is in progress — confirm discard
+      if (/already have a .* session in progress/i.test(e.message)) {
+        if (!confirm(`${e.message}\n\nDiscard it and start ${stype} instead?`)) return;
+        try {
+          const s = await api.post('/api/sessions', { session_type: stype, force_new: true });
+          setActiveSession(s);
+          setActiveType(s.session_type);
+          setView('live');
+        } catch (e2) {
+          setError(e2.message);
+        }
+        return;
       }
+      setError(e.message);
     }
   }
 
@@ -234,6 +244,34 @@ function LiveWorkout({ session, sessionData, onDone, onCancel }) {
   const [busy, setBusy] = useState(false);
   const [showSummary, setShowSummary] = useState(false);
   const prevRestRemaining = useRef(null);
+
+  // Reconcile draft.inputs against the server's actual sets for this session
+  // (covers the case where localStorage was cleared on another device / reinstall
+  // but the server still has the in-progress session and its logged sets).
+  useEffect(() => {
+    if (!session?.sets?.length) return;
+    setDraft((d) => {
+      const next = { ...d, inputs: { ...d.inputs } };
+      session.sets.forEach((srvSet) => {
+        const exIdx = exercises.findIndex((e) => e.name === srvSet.exercise_name);
+        if (exIdx < 0) return;
+        const setIdx = (srvSet.set_number || 1) - 1;
+        const exMap = { ...(next.inputs[exIdx] || {}) };
+        // Only fill if the local draft doesn't already have it logged (preserve fresh user edits)
+        if (!exMap[setIdx]?.logged) {
+          exMap[setIdx] = {
+            weight: String(srvSet.weight_kg),
+            reps: String(srvSet.reps),
+            logged: true,
+            cardio: srvSet.weight_kg === 0 && srvSet.reps <= 1,
+          };
+        }
+        next.inputs[exIdx] = exMap;
+      });
+      return next;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session.id, session.sets?.length, exercises]);
 
   // Single 1s tick that drives BOTH the elapsed clock and the rest timer.
   useEffect(() => {
