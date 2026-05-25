@@ -406,6 +406,19 @@ def _current_session_lock_note(user_id: int) -> str | None:
     )
 
 
+_TOPIC_ANCHOR_NOTE = (
+    "\n\n[SYSTEM REMINDER — not from Blake: your reply must be about the message Blake "
+    "JUST sent above this reminder. Earlier turns in this thread are background only — "
+    "they are NOT the topic. If Blake's last message named a venue (Subway, GYG, Maccas, "
+    "KFC, Nando's, etc.), your reply talks about THAT venue and nothing else. If he named "
+    "an exercise or session type, your reply is about THAT exercise/session. Before you "
+    "type your answer, silently re-read his last message and check: is every venue, "
+    "exercise, weight, and meal in your reply directly tied to that line? If not, rewrite. "
+    "Do NOT paraphrase his earlier messages back at him as if they were his current "
+    "question. Do NOT switch to a topic from earlier in the thread.]"
+)
+
+
 def chat_with_ero(user_id: int, history: list[dict], user_message: str) -> str:
     """Send a chat message and return Ero's reply (with tool-use)."""
     client = _client()
@@ -416,7 +429,7 @@ def chat_with_ero(user_id: int, history: list[dict], user_message: str) -> str:
     system = ERO_SYSTEM_PROMPT + "\n\n" + context
 
     lock_note = _current_session_lock_note(user_id)
-    final_user = user_message + (lock_note or "")
+    final_user = user_message + _TOPIC_ANCHOR_NOTE + (lock_note or "")
     messages = list(history) + [{"role": "user", "content": final_user}]
     text, _calls = _run_tool_loop(user_id, system, messages)
     return text
@@ -746,7 +759,10 @@ def chat_with_ero_multimodal(user_id: int, history: list[dict], user_message: st
             "type": "image",
             "source": {"type": "url", "url": image_url},
         })
-    user_content.append({"type": "text", "text": (user_message or "(image)") + (lock_note or "")})
+    user_content.append({
+        "type": "text",
+        "text": (user_message or "(image)") + _TOPIC_ANCHOR_NOTE + (lock_note or ""),
+    })
 
     messages = list(history) + [{"role": "user", "content": user_content}]
     text, _calls = _run_tool_loop(user_id, system, messages)

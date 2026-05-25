@@ -935,9 +935,12 @@ def register_routes(app: Flask):
         db.session.add(user_msg)
         db.session.commit()
 
-        history_rows = (ChatMessage.query.filter_by(user_id=u.id)
-                        .order_by(ChatMessage.created_at.asc()).limit(40).all())
-        history = [{"role": r.role, "content": r.content} for r in history_rows[:-1]]
+        # Keep only the most recent turns — long history dilutes the model's
+        # attention and was causing topic drift (e.g. Subway → GYG).
+        all_rows = (ChatMessage.query.filter_by(user_id=u.id)
+                    .order_by(ChatMessage.created_at.asc()).all())
+        recent = all_rows[-16:]  # last 16 messages incl. the one we just saved
+        history = [{"role": r.role, "content": r.content} for r in recent[:-1]]
 
         try:
             if image_url:

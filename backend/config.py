@@ -22,7 +22,7 @@ class Config:
     SQLALCHEMY_TRACK_MODIFICATIONS = False
 
     ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
-    ANTHROPIC_MODEL = "claude-sonnet-4-20250514"
+    ANTHROPIC_MODEL = "claude-opus-4-7"
 
     CLOUDINARY_CLOUD_NAME = os.getenv("CLOUDINARY_CLOUD_NAME", "")
     CLOUDINARY_API_KEY = os.getenv("CLOUDINARY_API_KEY", "")
