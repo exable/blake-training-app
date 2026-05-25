@@ -6,7 +6,7 @@ from anthropic import Anthropic
 from extensions import db
 from models import (
     User, WeightLog, WorkoutSession, WorkoutSet, MealLog, Meal,
-    DailyCheckin, WeeklyCheckin, WaterLog, ExercisePrevious,
+    DailyCheckin, WeeklyCheckin, WaterLog, ExercisePrevious, ChatMessage,
 )
 from program import ERO_SYSTEM_PROMPT, PROGRAM, DAY_TO_SESSION
 from config import Config
@@ -220,11 +220,72 @@ def _format_targets(u: User) -> str:
     )
 
 
+def _format_active_session(user_id: int) -> str | None:
+    """If there's an in-progress workout, build a high-visibility block describing it.
+    Returns None if no session is active."""
+    active = (WorkoutSession.query
+              .filter(WorkoutSession.user_id == user_id,
+                      WorkoutSession.completed_at == None)
+              .order_by(WorkoutSession.started_at.desc())
+              .first())
+    if not active:
+        return None
+
+    sets = WorkoutSet.query.filter_by(session_id=active.id).order_by(WorkoutSet.id.asc()).all()
+    by_ex: dict[str, list[str]] = {}
+    for s in sets:
+        # Cardio markers (weight=0, reps<=1) → shown as "done" rather than 0kg×1
+        if s.weight_kg == 0 and s.reps <= 1:
+            by_ex.setdefault(s.exercise_name, []).append("done (cardio)")
+        else:
+            by_ex.setdefault(s.exercise_name, []).append(f"{s.weight_kg}kg×{s.reps}")
+
+    program_exs = PROGRAM.get(active.session_type, [])
+    prev_lookup = {
+        r.exercise_name: json.loads(r.sets_json)
+        for r in ExercisePrevious.query.filter_by(
+            user_id=user_id, session_type=active.session_type
+        ).all()
+    }
+
+    lines = []
+    for ex in program_exs:
+        prev = prev_lookup.get(ex["name"])
+        prev_str = ""
+        if prev:
+            prev_str = " — last time: " + ", ".join(
+                f"{p['weight_kg']}kg×{p['reps']}" for p in prev
+            )
+        rpe = f" @ RPE {ex['rpe']}" if ex.get("rpe") else ""
+        cardio = " (cardio)" if ex.get("cardio") else ""
+        done = by_ex.get(ex["name"])
+        done_str = ""
+        if done:
+            done_str = f"\n      → done so far: {', '.join(done)}"
+        lines.append(
+            f"    • {ex['name']} — {ex['sets']}×{ex['rep_range']}{rpe}{cardio}{prev_str}{done_str}"
+        )
+
+    started = active.started_at.strftime("%H:%M UTC")
+    return (
+        f"\n🔴 ACTIVE WORKOUT — BLAKE IS CURRENTLY IN A {active.session_type.upper()} SESSION "
+        f"(started {started})\n"
+        f"Every training question in this conversation refers to TODAY'S {active.session_type} "
+        f"unless Blake EXPLICITLY says otherwise.\n"
+        f"NEVER mix this with another session type's exercises or weights.\n\n"
+        f"Today's {active.session_type} exercises (in order, with last session's logged sets "
+        f"and what's already done this session):\n"
+        + "\n".join(lines)
+        + "\n"
+    )
+
+
 def build_context(user_id: int) -> str:
     """Build a concise data-rich context block to prepend to Ero conversations."""
     user = db.session.get(User, user_id)
     today = date.today()
     seven_days_ago = today - timedelta(days=14)
+    active_block = _format_active_session(user_id)
 
     # weights
     weights = (WeightLog.query
@@ -286,7 +347,7 @@ def build_context(user_id: int) -> str:
     today_session = DAY_TO_SESSION[today.weekday()]
 
     ctx = f"""[BLAKE'S LIVE DATA — {today} ({today.strftime('%A')}, scheduled session: {today_session})]
-
+{active_block or ''}
 GOALS & TARGETS:
 {_format_targets(user)}
 
@@ -327,6 +388,24 @@ Recent daily check-ins:
     return ctx
 
 
+def _current_session_lock_note(user_id: int) -> str | None:
+    """One-line reminder injected into every user message when there's an active session.
+    Forces Claude to anchor on the active session even if old assistant turns drifted."""
+    active = (WorkoutSession.query
+              .filter(WorkoutSession.user_id == user_id,
+                      WorkoutSession.completed_at == None)
+              .order_by(WorkoutSession.started_at.desc())
+              .first())
+    if not active:
+        return None
+    return (
+        f"\n\n[SYSTEM REMINDER — not from Blake: he is currently IN an active "
+        f"{active.session_type.upper()} session. Any training question refers to {active.session_type}. "
+        f"If any earlier assistant reply in this thread referenced a different session, that reply was "
+        f"wrong — silently correct course, do NOT re-assert the wrong session or ask him to confirm.]"
+    )
+
+
 def chat_with_ero(user_id: int, history: list[dict], user_message: str) -> str:
     """Send a chat message and return Ero's reply (with tool-use)."""
     client = _client()
@@ -336,7 +415,9 @@ def chat_with_ero(user_id: int, history: list[dict], user_message: str) -> str:
     context = build_context(user_id)
     system = ERO_SYSTEM_PROMPT + "\n\n" + context
 
-    messages = list(history) + [{"role": "user", "content": user_message}]
+    lock_note = _current_session_lock_note(user_id)
+    final_user = user_message + (lock_note or "")
+    messages = list(history) + [{"role": "user", "content": final_user}]
     text, _calls = _run_tool_loop(user_id, system, messages)
     return text
 
@@ -658,13 +739,14 @@ def chat_with_ero_multimodal(user_id: int, history: list[dict], user_message: st
     context = build_context(user_id)
     system = ERO_SYSTEM_PROMPT + "\n\n" + context
 
+    lock_note = _current_session_lock_note(user_id)
     user_content: list[dict] = []
     if image_url:
         user_content.append({
             "type": "image",
             "source": {"type": "url", "url": image_url},
         })
-    user_content.append({"type": "text", "text": user_message or "(image)"})
+    user_content.append({"type": "text", "text": (user_message or "(image)") + (lock_note or "")})
 
     messages = list(history) + [{"role": "user", "content": user_content}]
     text, _calls = _run_tool_loop(user_id, system, messages)

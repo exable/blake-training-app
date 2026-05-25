@@ -21,6 +21,29 @@ export default function Chat() {
   const [autoSpeak, setAutoSpeak] = useState(() => localStorage.getItem('autoSpeak') === '1');
   const scrollRef = useRef(null);
   const recRef = useRef(null);
+  const inputRef = useRef(null);
+
+  // Detect coarse pointer (touch) devices once
+  const isTouch = typeof window !== 'undefined'
+    && window.matchMedia?.('(pointer: coarse)').matches;
+
+  // Auto-grow the textarea up to a cap
+  useEffect(() => {
+    const el = inputRef.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = Math.min(el.scrollHeight, 160) + 'px';
+  }, [text]);
+
+  function onInputKeyDown(e) {
+    // Desktop: Enter sends, Shift/Alt/Ctrl/Meta+Enter inserts newline.
+    // Touch (mobile/tablet): Enter ALWAYS inserts a newline. Send button only.
+    if (e.key !== 'Enter') return;
+    if (isTouch) return; // let the default newline happen
+    if (e.shiftKey || e.altKey || e.ctrlKey || e.metaKey) return;
+    e.preventDefault();
+    send();
+  }
 
   async function load() {
     try {
@@ -160,7 +183,7 @@ export default function Chat() {
         </div>
       )}
 
-      <form onSubmit={send} className="pt-3 border-t border-line flex gap-2 pb-2 items-center">
+      <form onSubmit={send} className="pt-3 border-t border-line flex gap-2 pb-2 items-end">
         <label className="btn btn-secondary px-3 cursor-pointer" title="Send a photo">
           <ImagePlus size={16} />
           <input type="file" accept="image/*" className="hidden"
@@ -176,11 +199,14 @@ export default function Chat() {
             {listening ? <MicOff size={16} /> : <Mic size={16} />}
           </button>
         )}
-        <input
-          className="input flex-1"
+        <textarea
+          ref={inputRef}
+          rows={1}
+          className="input flex-1 resize-none leading-snug py-2"
           placeholder={pendingImage ? "Add a question about the image..." : "Message Ero..."}
           value={text}
           onChange={(e) => setText(e.target.value)}
+          onKeyDown={onInputKeyDown}
           disabled={sending}
         />
         <button type="submit" disabled={sending || (!text.trim() && !pendingImage?.url)} className="btn btn-primary px-4">
