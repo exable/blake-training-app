@@ -361,10 +361,13 @@ def register_routes(app: Flask):
 
         daily_done = DailyCheckin.query.filter_by(user_id=u.id, date=today).first() is not None
 
+        actual_type = todays_session.session_type if todays_session else None
         return {
             "date": today.isoformat(),
             "latest_weight_kg": latest_weight.weight_kg if latest_weight else None,
             "session_type_today": session_type,
+            "session_type_actual": actual_type,
+            "session_swapped": bool(actual_type and actual_type != session_type),
             "session_started": bool(todays_session),
             "session_completed": bool(todays_session and todays_session.completed_at),
             "meals_eaten": eaten_count,

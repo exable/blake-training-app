@@ -3,7 +3,9 @@ import { ChevronRight, Play, Pause, RotateCcw, Check, Clock, Flame, History, Arr
 import { api } from '../lib/api.js';
 import Spinner, { FullSpinner } from '../components/Spinner.jsx';
 import ErrorBanner from '../components/ErrorBanner.jsx';
+import ConfirmModal from '../components/ConfirmModal.jsx';
 import useDraft from '../lib/useDraft.js';
+import useConfirm from '../lib/useConfirm.js';
 import {
   ensureNotifyPermission, notify, beep, vibrate,
   scheduleRestNotification, cancelRestNotification,
@@ -27,6 +29,7 @@ export default function Workout() {
   const [historyFilter, setHistoryFilter] = useState('');
   const [openSession, setOpenSession] = useState(null);
   const [error, setError] = useState(null);
+  const [confirm, confirmProps] = useConfirm();
 
   async function loadProgram() {
     try {
@@ -67,7 +70,13 @@ export default function Workout() {
     } catch (e) {
       // 409 from backend means a different-type session is in progress — confirm discard
       if (/already have a .* session in progress/i.test(e.message)) {
-        if (!confirm(`${e.message}\n\nDiscard it and start ${stype} instead?`)) return;
+        const ok = await confirm({
+          title: 'Discard existing session?',
+          message: `${e.message}\n\nDiscard it and start ${stype} instead?`,
+          confirmLabel: `Start ${stype}`,
+          destructive: true,
+        });
+        if (!ok) return;
         try {
           const s = await api.post('/api/sessions', { session_type: stype, force_new: true });
           setActiveSession(s);
@@ -86,12 +95,16 @@ export default function Workout() {
 
   if (view === 'live' && activeSession) {
     return (
-      <LiveWorkout
-        session={activeSession}
-        sessionData={program[activeSession.session_type]}
-        onDone={async () => { setView('select'); setActiveSession(null); await loadProgram(); }}
-        onCancel={() => { setView('select'); setActiveSession(null); }}
-      />
+      <>
+        <LiveWorkout
+          session={activeSession}
+          sessionData={program[activeSession.session_type]}
+          confirm={confirm}
+          onDone={async () => { setView('select'); setActiveSession(null); await loadProgram(); }}
+          onCancel={() => { setView('select'); setActiveSession(null); }}
+        />
+        <ConfirmModal {...confirmProps} />
+      </>
     );
   }
 
@@ -102,6 +115,7 @@ export default function Workout() {
   return (
     <div className="space-y-5 fade-in">
       <ErrorBanner error={error} onDismiss={() => setError(null)} />
+      <ConfirmModal {...confirmProps} />
 
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold">Workout</h1>
@@ -221,7 +235,7 @@ function FilterChip({ active, onClick, children }) {
   );
 }
 
-function LiveWorkout({ session, sessionData, onDone, onCancel }) {
+function LiveWorkout({ session, sessionData, confirm, onDone, onCancel }) {
   const exercises = sessionData?.exercises || [];
   const previous = sessionData?.previous || {};
   // Draft state is persisted in localStorage; this is what survives an app close.
@@ -405,7 +419,14 @@ function LiveWorkout({ session, sessionData, onDone, onCancel }) {
   }
 
   async function cancelSession() {
-    if (!confirm('Cancel this workout? All logged sets in this session will be discarded.')) return;
+    const ok = await confirm({
+      title: 'Cancel this workout?',
+      message: 'All logged sets in this session will be discarded.',
+      confirmLabel: 'Cancel workout',
+      cancelLabel: 'Keep going',
+      destructive: true,
+    });
+    if (!ok) return;
     setBusy(true);
     setError(null);
     try {

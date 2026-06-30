@@ -3,7 +3,9 @@ import { Droplets, Plus, Pencil, Trash2, X, Check, CupSoda } from 'lucide-react'
 import { api } from '../lib/api.js';
 import Spinner, { FullSpinner } from '../components/Spinner.jsx';
 import ErrorBanner from '../components/ErrorBanner.jsx';
+import ConfirmModal from '../components/ConfirmModal.jsx';
 import useDraft from '../lib/useDraft.js';
+import useConfirm from '../lib/useConfirm.js';
 
 export default function Nutrition() {
   const [meals, setMeals] = useState(null);
@@ -12,6 +14,7 @@ export default function Nutrition() {
   const [error, setError] = useState(null);
   const [editing, setEditing] = useState(null); // meal id or 'new'
   const [busy, setBusy] = useState(false);
+  const [confirm, confirmProps] = useConfirm();
 
   async function load() {
     try {
@@ -57,7 +60,12 @@ export default function Nutrition() {
   }
 
   async function resetWater() {
-    if (!confirm('Reset today\'s water?')) return;
+    const ok = await confirm({
+      title: "Reset today's water?",
+      confirmLabel: 'Reset',
+      destructive: true,
+    });
+    if (!ok) return;
     try {
       await api.del('/api/water');
       await load();
@@ -67,6 +75,7 @@ export default function Nutrition() {
   return (
     <div className="space-y-5 fade-in">
       <ErrorBanner error={error} onDismiss={() => setError(null)} />
+      <ConfirmModal {...confirmProps} />
       <h1 className="text-2xl font-bold">Nutrition</h1>
 
       {/* Macro progress */}
@@ -220,6 +229,7 @@ function MealEditor({ mealId, existing, onClose, onSaved }) {
   });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
+  const [confirm, confirmProps] = useConfirm();
 
   async function save() {
     setBusy(true);
@@ -234,7 +244,12 @@ function MealEditor({ mealId, existing, onClose, onSaved }) {
   }
 
   async function remove() {
-    if (!confirm('Delete this meal?')) return;
+    const ok = await confirm({
+      title: 'Delete this meal?',
+      confirmLabel: 'Delete',
+      destructive: true,
+    });
+    if (!ok) return;
     setBusy(true);
     try {
       await api.del(`/api/meals/${mealId}`);
@@ -246,6 +261,7 @@ function MealEditor({ mealId, existing, onClose, onSaved }) {
 
   return (
     <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-end md:items-center justify-center p-4 fade-in">
+      <ConfirmModal {...confirmProps} />
       <div className="bg-surface border border-line rounded-2xl w-full max-w-md p-5 slide-up">
         <div className="flex items-center justify-between mb-4">
           <div className="font-semibold">{mealId ? 'Edit meal' : 'New meal'}</div>

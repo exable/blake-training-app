@@ -3,6 +3,7 @@ import os
 import json
 from datetime import date, datetime, timedelta
 from anthropic import Anthropic
+from sqlalchemy import func
 from extensions import db
 from models import (
     User, WeightLog, WorkoutSession, WorkoutSet, MealLog, Meal,
@@ -70,7 +71,9 @@ def _format_weight_trend(user_id: int) -> str:
 
 
 def _format_schedule_adherence(user_id: int) -> str:
-    """Last 14 days: scheduled session vs trained_today answer + actual workout existence."""
+    """Last 14 days: scheduled session vs what was actually trained.
+    Critically: a SWAP (e.g. Legs done on a Pull day) counts as TRAINED, not missed.
+    """
     today = date.today()
     out = []
     sessions_by_date: dict = {}
@@ -88,27 +91,36 @@ def _format_schedule_adherence(user_id: int) -> str:
 
     missed = 0
     trained = 0
+    swapped = 0
     for i in range(14, 0, -1):
         d = today - timedelta(days=i)
         scheduled = DAY_TO_SESSION_BY_NAME(d.weekday())
-        completed = any(s.completed_at for s in sessions_by_date.get(d, []))
+        done_types = [s.session_type for s in sessions_by_date.get(d, []) if s.completed_at]
         daily_ans = dailies.get(d)
         ans = daily_ans.trained_today if daily_ans else None
 
-        marker = "·"
-        if scheduled == "Rest":
-            marker = "💤"
-        elif completed:
-            marker = "✓"; trained += 1
+        if done_types:
+            trained += 1
+            if scheduled in done_types:
+                line = f"{scheduled} ✓"
+            else:
+                swapped += 1
+                actual = done_types[0]
+                line = f"{actual} ✓ (scheduled was {scheduled} — SWAPPED, not skipped)"
+        elif scheduled == "Rest":
+            line = "Rest 💤"
         elif ans == "Yes":
-            marker = "?"  # said yes but no session logged
-        elif ans in ("No", None):
-            if scheduled != "Rest":
-                marker = "✗"; missed += 1
+            line = f"{scheduled} ? (said trained but no session logged)"
+        else:  # ans == "No" or None on a training day
+            missed += 1
+            line = f"{scheduled} ✗ (missed)"
 
-        out.append(f"{d.strftime('%a %d')}: {scheduled} {marker}")
+        out.append(f"{d.strftime('%a %d')}: {line}")
 
-    summary = f"  Last 14 days — trained: {trained}, missed: {missed}"
+    summary = (
+        f"  Last 14 days — trained: {trained} (incl. {swapped} swap"
+        f"{'s' if swapped != 1 else ''}), missed: {missed}"
+    )
     return summary + "\n  " + "\n  ".join(out)
 
 
@@ -280,12 +292,45 @@ def _format_active_session(user_id: int) -> str | None:
     )
 
 
+def _format_today_status(user_id: int, today: date) -> str:
+    """One-liner that makes today's training status unambiguous so Ero never
+    misreads a swap (e.g. Legs done on a Pull day) as a skipped session."""
+    scheduled = DAY_TO_SESSION[today.weekday()]
+    sessions_today = WorkoutSession.query.filter(
+        WorkoutSession.user_id == user_id,
+        func.date(WorkoutSession.started_at) == today,
+    ).all()
+    completed = [s for s in sessions_today if s.completed_at]
+    in_progress = [s for s in sessions_today if not s.completed_at]
+
+    if completed:
+        types = ", ".join(s.session_type for s in completed)
+        if scheduled in [s.session_type for s in completed]:
+            return (
+                f"  TODAY ({scheduled} scheduled): TRAINED — completed {types}. "
+                "Blake DID train today. Do NOT say he missed/skipped today's session."
+            )
+        return (
+            f"  TODAY ({scheduled} scheduled): TRAINED via SWAP — completed {types} "
+            f"instead of {scheduled}. Blake DID train today; he swapped sessions. "
+            f"Do NOT say he skipped or missed training. If anything, suggest "
+            f"rescheduling {scheduled} into the week — but acknowledge the work he did."
+        )
+    if in_progress:
+        types = ", ".join(s.session_type for s in in_progress)
+        return f"  TODAY ({scheduled} scheduled): IN PROGRESS — {types} session(s) running."
+    if scheduled == "Rest":
+        return "  TODAY: Rest day. No session expected."
+    return f"  TODAY ({scheduled} scheduled): not started yet."
+
+
 def build_context(user_id: int) -> str:
     """Build a concise data-rich context block to prepend to Ero conversations."""
     user = db.session.get(User, user_id)
     today = date.today()
     seven_days_ago = today - timedelta(days=14)
     active_block = _format_active_session(user_id)
+    today_status = _format_today_status(user_id, today)
 
     # weights
     weights = (WeightLog.query
@@ -348,6 +393,9 @@ def build_context(user_id: int) -> str:
 
     ctx = f"""[BLAKE'S LIVE DATA — {today} ({today.strftime('%A')}, scheduled session: {today_session})]
 {active_block or ''}
+TODAY'S TRAINING STATUS (read this BEFORE saying anything about whether Blake trained today):
+{today_status}
+
 GOALS & TARGETS:
 {_format_targets(user)}
 
@@ -365,7 +413,7 @@ Today so far: {eaten_count}/{total_meals} meals eaten, {water_today}ml water (ta
 BODYWEIGHT TREND:
 {_format_weight_trend(user_id)}
 
-SCHEDULE ADHERENCE (last 14 days — ✓=trained, ✗=missed, 💤=rest, ?=said trained but no session logged):
+SCHEDULE ADHERENCE (last 14 days — ✓=trained (any session type counts), ✗=missed, 💤=rest, ?=said trained but no session logged. A "SWAPPED" day means Blake did a different split than scheduled — STILL counts as trained, NOT a miss):
 {_format_schedule_adherence(user_id)}
 
 STALLED LIFTS (top weight unchanged in last 2-3 sessions — flag if relevant):
@@ -693,10 +741,6 @@ def _execute_tool(user_id: int, name: str, args: dict) -> dict:
         return {"error": f"unknown tool {name}"}
     except Exception as e:
         return {"error": str(e)}
-
-
-# Imports used by tool execution
-from sqlalchemy import func
 
 
 def _run_tool_loop(user_id: int, system: str, messages: list, max_iters: int = 6) -> tuple[str, list]:

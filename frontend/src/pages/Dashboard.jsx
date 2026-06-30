@@ -74,11 +74,17 @@ export default function Dashboard() {
         <StatCard
           icon={<Dumbbell className="text-accent" size={18} />}
           label="Today's Session"
-          value={data.session_type_today}
+          value={data.session_swapped ? data.session_type_actual : data.session_type_today}
           sub={
-            data.session_completed ? 'Completed' :
-              data.session_started ? 'In progress' :
-                data.session_type_today === 'Rest' ? 'Rest day' : 'Not started'
+            data.session_completed
+              ? (data.session_swapped
+                  ? `Completed (swapped from ${data.session_type_today})`
+                  : 'Completed')
+              : data.session_started
+                ? (data.session_swapped
+                    ? `In progress (swapped from ${data.session_type_today})`
+                    : 'In progress')
+                : data.session_type_today === 'Rest' ? 'Rest day' : 'Not started'
           }
         />
         <StatCard
@@ -100,7 +106,13 @@ export default function Dashboard() {
         <StatusRow
           done={data.session_completed}
           label="Today's training"
-          sub={data.session_type_today === 'Rest' ? 'Rest day — recover' : data.session_type_today}
+          sub={
+            data.session_type_today === 'Rest'
+              ? 'Rest day — recover'
+              : data.session_swapped
+                ? `${data.session_type_actual} (swapped from ${data.session_type_today})`
+                : data.session_type_today
+          }
           to="/workout"
         />
         <StatusRow
