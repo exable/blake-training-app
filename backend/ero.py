@@ -447,24 +447,40 @@ def _current_session_lock_note(user_id: int) -> str | None:
     if not active:
         return None
     return (
-        f"\n\n[SYSTEM REMINDER — not from Blake: he is currently IN an active "
-        f"{active.session_type.upper()} session. Any training question refers to {active.session_type}. "
-        f"If any earlier assistant reply in this thread referenced a different session, that reply was "
-        f"wrong — silently correct course, do NOT re-assert the wrong session or ask him to confirm.]"
+        f"\n\n[ACTIVE SESSION: Blake is in a {active.session_type.upper()} workout right now. "
+        f"Training questions refer to {active.session_type}. If an earlier reply named a different "
+        f"session it was wrong - correct course silently, don't ask him to confirm.]"
     )
 
 
 _TOPIC_ANCHOR_NOTE = (
-    "\n\n[SYSTEM REMINDER — not from Blake: your reply must be about the message Blake "
-    "JUST sent above this reminder. Earlier turns in this thread are background only — "
-    "they are NOT the topic. If Blake's last message named a venue (Subway, GYG, Maccas, "
-    "KFC, Nando's, etc.), your reply talks about THAT venue and nothing else. If he named "
-    "an exercise or session type, your reply is about THAT exercise/session. Before you "
-    "type your answer, silently re-read his last message and check: is every venue, "
-    "exercise, weight, and meal in your reply directly tied to that line? If not, rewrite. "
-    "Do NOT paraphrase his earlier messages back at him as if they were his current "
-    "question. Do NOT switch to a topic from earlier in the thread.]"
+    "\n\n[REMINDER - not from Blake: reply to the message directly above this line and nothing "
+    "else. Earlier turns are background, not the topic. Same venue, same session, same lift "
+    "he just named. Every number you use must be in the data block.]"
 )
+
+
+def _last_position_note(history: list[dict]) -> str:
+    """Quote Ero's previous reply next to the new question so a follow-up like
+    'are you sure?' is answered against a visible prior position, not a vague memory."""
+    for m in reversed(history):
+        if m.get("role") != "assistant":
+            continue
+        text = m.get("content") if isinstance(m.get("content"), str) else ""
+        text = (text or "").strip()
+        if not text or text.startswith("(Ero "):
+            continue
+        if len(text) > 600:
+            text = text[:600].rsplit(" ", 1)[0] + " ..."
+        return (
+            "\n\n[YOUR PREVIOUS REPLY - hold this position unless Blake just gave you new data; "
+            "a repeated or doubting question is not new data:\n" + text + "]"
+        )
+    return ""
+
+
+def _turn_notes(user_id: int, history: list[dict]) -> str:
+    return _TOPIC_ANCHOR_NOTE + _last_position_note(history) + (_current_session_lock_note(user_id) or "")
 
 
 def chat_with_ero(user_id: int, history: list[dict], user_message: str) -> str:
@@ -476,8 +492,7 @@ def chat_with_ero(user_id: int, history: list[dict], user_message: str) -> str:
     context = build_context(user_id)
     system = ERO_SYSTEM_PROMPT + "\n\n" + context
 
-    lock_note = _current_session_lock_note(user_id)
-    final_user = user_message + _TOPIC_ANCHOR_NOTE + (lock_note or "")
+    final_user = user_message + _turn_notes(user_id, history)
     messages = list(history) + [{"role": "user", "content": final_user}]
     text, _calls = _run_tool_loop(user_id, system, messages)
     return text
@@ -532,7 +547,7 @@ def generate_weekly_response(user_id: int, weekly: WeeklyCheckin) -> str:
     )
 
     messages = [{"role": "user", "content": prompt}]
-    text, _calls = _run_tool_loop(user_id, system, messages, max_iters=8)
+    text, _calls = _run_tool_loop(user_id, system, messages, max_iters=8, max_tokens=8192)
     return text
 
 
@@ -743,38 +758,38 @@ def _execute_tool(user_id: int, name: str, args: dict) -> dict:
         return {"error": str(e)}
 
 
-def _run_tool_loop(user_id: int, system: str, messages: list, max_iters: int = 6) -> tuple[str, list]:
+def _run_tool_loop(user_id: int, system: str, messages: list, max_iters: int = 6,
+                   max_tokens: int = 4096) -> tuple[str, list]:
     """Run the Claude tool-use loop. Returns (final_text, tool_calls_executed)."""
     client = _client()
     tool_calls_log = []
     for _ in range(max_iters):
         resp = client.messages.create(
             model=Config.ANTHROPIC_MODEL,
-            max_tokens=2048,
+            max_tokens=max_tokens,
             system=system,
             tools=EROS_TOOLS,
             messages=messages,
+            # Adaptive thinking is what stops the flip-flops and invented numbers;
+            # effort rides in extra_body so any SDK version >= 0.49 accepts it.
+            thinking={"type": "adaptive"},
+            extra_body={"output_config": {"effort": "high"}},
         )
+        text = "".join(b.text for b in resp.content if getattr(b, "type", "") == "text")
+        if resp.stop_reason == "refusal":
+            return text or "(Can't go there, g. Ask me something training or food related.)", tool_calls_log
         if resp.stop_reason != "tool_use":
-            text = "".join(b.text for b in resp.content if getattr(b, "type", "") == "text")
             return text, tool_calls_log
 
-        # Append assistant turn including the tool_use blocks
-        assistant_blocks = []
-        tool_uses = []
-        for b in resp.content:
-            if b.type == "text":
-                assistant_blocks.append({"type": "text", "text": b.text})
-            elif b.type == "tool_use":
-                assistant_blocks.append({
-                    "type": "tool_use", "id": b.id, "name": b.name, "input": b.input,
-                })
-                tool_uses.append(b)
-        messages.append({"role": "assistant", "content": assistant_blocks})
+        # Echo the whole assistant turn back (thinking blocks included) so the
+        # tool_result continuation is valid.
+        messages.append({
+            "role": "assistant",
+            "content": [b.model_dump(mode="json", exclude_none=True) for b in resp.content],
+        })
 
-        # Execute each tool, attach results
         result_blocks = []
-        for tu in tool_uses:
+        for tu in (b for b in resp.content if getattr(b, "type", "") == "tool_use"):
             res = _execute_tool(user_id, tu.name, tu.input or {})
             tool_calls_log.append({"name": tu.name, "input": tu.input, "result": res})
             result_blocks.append({
@@ -783,7 +798,7 @@ def _run_tool_loop(user_id: int, system: str, messages: list, max_iters: int = 6
             })
         messages.append({"role": "user", "content": result_blocks})
 
-    return "(Ero ran out of tool iterations — try again.)", tool_calls_log
+    return "(Ero ran out of tool iterations - try again.)", tool_calls_log
 
 
 def chat_with_ero_multimodal(user_id: int, history: list[dict], user_message: str,
@@ -796,7 +811,6 @@ def chat_with_ero_multimodal(user_id: int, history: list[dict], user_message: st
     context = build_context(user_id)
     system = ERO_SYSTEM_PROMPT + "\n\n" + context
 
-    lock_note = _current_session_lock_note(user_id)
     user_content: list[dict] = []
     if image_url:
         user_content.append({
@@ -805,7 +819,7 @@ def chat_with_ero_multimodal(user_id: int, history: list[dict], user_message: st
         })
     user_content.append({
         "type": "text",
-        "text": (user_message or "(image)") + _TOPIC_ANCHOR_NOTE + (lock_note or ""),
+        "text": (user_message or "(image)") + _turn_notes(user_id, history),
     })
 
     messages = list(history) + [{"role": "user", "content": user_content}]

@@ -4,6 +4,7 @@ import { api } from '../lib/api.js';
 import Spinner, { FullSpinner } from '../components/Spinner.jsx';
 import ErrorBanner from '../components/ErrorBanner.jsx';
 import useDraft from '../lib/useDraft.js';
+import VoiceInput from '../components/VoiceInput.jsx';
 
 export default function Checkins() {
   const [tab, setTab] = useState('daily');
@@ -94,12 +95,12 @@ function DailyCheckin() {
       <div className="space-y-2">
         <label className="label">3 things you're proud of today</label>
         {[1, 2, 3].map((i) => (
-          <input
+          <VoiceInput
             key={i}
-            className="input"
+            multiline={false}
             placeholder={`#${i}`}
             value={form[`proud_${i}`]}
-            onChange={(e) => setForm({ ...form, [`proud_${i}`]: e.target.value })}
+            onChange={(v) => setForm({ ...form, [`proud_${i}`]: v })}
           />
         ))}
       </div>
@@ -126,10 +127,11 @@ function DailyCheckin() {
       />
       <div>
         <label className="label">Notes</label>
-        <textarea
-          className="input min-h-[80px]"
+        <VoiceInput
+          minHeight={80}
+          placeholder="Anything worth noting - tap the mic and talk"
           value={form.notes}
-          onChange={(e) => setForm({ ...form, notes: e.target.value })}
+          onChange={(v) => setForm({ ...form, notes: v })}
         />
       </div>
       <button type="submit" disabled={busy} className="btn btn-primary w-full">
@@ -242,8 +244,8 @@ function WeeklyCheckin() {
             </div>
             <div>
               <label className="label">Sleep quality (notes)</label>
-              <input className="input"
-                value={form.sleep_quality} onChange={(e) => setForm({ ...form, sleep_quality: e.target.value })} />
+              <VoiceInput multiline={false}
+                value={form.sleep_quality} onChange={(v) => setForm({ ...form, sleep_quality: v })} />
             </div>
           </div>
 
@@ -326,7 +328,7 @@ function Text({ label, v, onChange }) {
   return (
     <div>
       <label className="label">{label}</label>
-      <textarea className="input min-h-[60px]" value={v} onChange={(e) => onChange(e.target.value)} />
+      <VoiceInput minHeight={60} value={v} onChange={onChange} />
     </div>
   );
 }
