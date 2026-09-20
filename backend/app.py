@@ -33,10 +33,16 @@ def create_app():
     jwt.init_app(app)
     migrate.init_app(app, db)
 
-    origin = Config.FRONTEND_ORIGIN
+    # FRONTEND_ORIGIN may be a comma-separated list. Per-deployment Vercel URLs for this
+    # project are always allowed so a preview link never breaks login.
+    configured = [o.strip() for o in Config.FRONTEND_ORIGIN.split(",") if o.strip()]
+    origins = "*" if "*" in configured else configured + [
+        r"https://frontend(-[a-z0-9]+)?-s-projects-fb673b25\.vercel\.app",
+        "https://frontend-six-sooty-87.vercel.app",
+    ]
     cors.init_app(
         app,
-        resources={r"/api/*": {"origins": origin if origin != "*" else "*"}},
+        resources={r"/api/*": {"origins": origins}},
         supports_credentials=True,
     )
 
