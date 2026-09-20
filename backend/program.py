@@ -14,7 +14,7 @@ DAY_TO_SESSION = {
 # rest in seconds
 PROGRAM = {
     "Upper": [
-        {"name": "Barbell Bench Press", "sets": 4, "rep_range": "4", "rpe": "7", "rest": 180},
+        {"name": "Flat DB Bench", "sets": 4, "rep_range": "6-8", "rpe": None, "rest": 180},
         {"name": "Pec Deck Fly", "sets": 3, "rep_range": "10-12", "rpe": None, "rest": 90},
         {"name": "Lat Pulldown Pronated", "sets": 3, "rep_range": "8-12", "rpe": None, "rest": 120},
         {"name": "Chest Supported T-Bar Row", "sets": 3, "rep_range": "8-12", "rpe": None, "rest": 120},
@@ -29,16 +29,16 @@ PROGRAM = {
         {"name": "Hack Squat", "sets": 3, "rep_range": "7-10", "rpe": None, "rest": 180},
         {"name": "Leg Press", "sets": 3, "rep_range": "10-12", "rpe": None, "rest": 120},
         {"name": "Calf Raise Machine", "sets": 4, "rep_range": "10-15", "rpe": None, "rest": 90},
-        {"name": "Decline Bench Sit Up", "sets": 4, "rep_range": "10-15", "rpe": None, "rest": 90, "bodyweight": True},
     ],
     "Push": [
-        {"name": "Barbell Bench Press", "sets": 3, "rep_range": "6", "rpe": "7", "rest": 180},
+        {"name": "Machine Chest Press", "sets": 3, "rep_range": "6-8", "rpe": None, "rest": 180},
         {"name": "Dumbbell Lateral Raise", "sets": 3, "rep_range": "12-15", "rpe": None, "rest": 90},
         {"name": "Incline Chest Press", "sets": 3, "rep_range": "8-10", "rpe": None, "rest": 120},
         {"name": "Seated Dumbbell Shoulder Press", "sets": 3, "rep_range": "8-12", "rpe": None, "rest": 90},
         {"name": "Incline Cable Fly", "sets": 2, "rep_range": "10-12", "rpe": None, "rest": 90},
         {"name": "Cable Triceps Pushdown Straight Bar", "sets": 3, "rep_range": "8-12", "rpe": None, "rest": 90},
         {"name": "Single Arm Overhead Triceps Cable Extension", "sets": 3, "rep_range": "8-12", "rpe": None, "rest": 90},
+        {"name": "Weighted Sit Up", "sets": 3, "rep_range": "10-15", "rpe": None, "rest": 60},
     ],
     "Pull": [
         {"name": "Lat Pulldown Machine", "sets": 3, "rep_range": "8-10", "rpe": None, "rest": 120},
@@ -47,9 +47,10 @@ PROGRAM = {
         {"name": "Reverse Pec Deck Fly", "sets": 3, "rep_range": "12-15", "rpe": None, "rest": 90},
         {"name": "Preacher Curl", "sets": 3, "rep_range": "8-12", "rpe": None, "rest": 90},
         {"name": "Incline Dumbbell Curl", "sets": 3, "rep_range": "10-12", "rpe": None, "rest": 90},
+        {"name": "Ab Wheel Rollout", "sets": 3, "rep_range": "8-12", "rpe": None, "rest": 60, "bodyweight": True},
     ],
     "Legs": [
-        {"name": "Barbell Bench Press", "sets": 3, "rep_range": "8", "rpe": "7", "rest": 180},
+        {"name": "Barbell Hip Thrust", "sets": 3, "rep_range": "8-10", "rpe": None, "rest": 180},
         {"name": "Lying Leg Curl", "sets": 3, "rep_range": "8-12", "rpe": None, "rest": 120},
         {"name": "Leg Extension", "sets": 3, "rep_range": "12-15", "rpe": None, "rest": 120},
         {"name": "Hyperextension", "sets": 3, "rep_range": "8-12", "rpe": None, "rest": 90},
@@ -64,7 +65,7 @@ PROGRAM = {
 # Each entry: list of {weight_kg, reps}
 RECENT_LIFTS = {
     "Upper": {
-        "Barbell Bench Press": [{"weight_kg": 57.5, "reps": 4}, {"weight_kg": 57.5, "reps": 4}, {"weight_kg": 57.5, "reps": 4}, {"weight_kg": 57.5, "reps": 4}],
+        "Flat DB Bench": [{"weight_kg": 22.5, "reps": 6}, {"weight_kg": 22.5, "reps": 6}, {"weight_kg": 22.5, "reps": 6}, {"weight_kg": 22.5, "reps": 6}],
         "Pec Deck Fly": [{"weight_kg": 54.7, "reps": 12}, {"weight_kg": 54.7, "reps": 12}, {"weight_kg": 54.7, "reps": 12}],
         "Lat Pulldown Pronated": [{"weight_kg": 50, "reps": 12}, {"weight_kg": 50, "reps": 10}, {"weight_kg": 50, "reps": 9}],
         "Chest Supported T-Bar Row": [{"weight_kg": 35, "reps": 13}, {"weight_kg": 35, "reps": 11}, {"weight_kg": 35, "reps": 9}],
@@ -73,13 +74,14 @@ RECENT_LIFTS = {
         "Standing Bicep Cable Curl": [{"weight_kg": 50, "reps": 15}, {"weight_kg": 50, "reps": 13}, {"weight_kg": 50, "reps": 13}],
     },
     "Push": {
-        "Barbell Bench Press": [{"weight_kg": 55, "reps": 6}, {"weight_kg": 55, "reps": 6}, {"weight_kg": 55, "reps": 6}],
+        "Machine Chest Press": [{"weight_kg": 40, "reps": 6}, {"weight_kg": 40, "reps": 6}, {"weight_kg": 40, "reps": 6}],
         "Dumbbell Lateral Raise": [{"weight_kg": 7.5, "reps": 15}, {"weight_kg": 7.5, "reps": 15}, {"weight_kg": 7.5, "reps": 15}],
         "Incline Chest Press": [{"weight_kg": 45, "reps": 10}, {"weight_kg": 45, "reps": 8}, {"weight_kg": 45, "reps": 10}],
         "Seated Dumbbell Shoulder Press": [{"weight_kg": 20, "reps": 8}, {"weight_kg": 17.5, "reps": 12}, {"weight_kg": 17.5, "reps": 12}],
         "Incline Cable Fly": [{"weight_kg": 32.5, "reps": 10}, {"weight_kg": 32.5, "reps": 10}],
         "Cable Triceps Pushdown Straight Bar": [{"weight_kg": 50, "reps": 9}, {"weight_kg": 45, "reps": 10}, {"weight_kg": 45, "reps": 12}],
         "Single Arm Overhead Triceps Cable Extension": [{"weight_kg": 12.5, "reps": 12}, {"weight_kg": 12.5, "reps": 12}, {"weight_kg": 12.5, "reps": 12}],
+        "Weighted Sit Up": [{"weight_kg": 10, "reps": 10}, {"weight_kg": 10, "reps": 10}, {"weight_kg": 10, "reps": 10}],
     },
     "Pull": {
         "Lat Pulldown Machine": [{"weight_kg": 42.5, "reps": 10}, {"weight_kg": 42.5, "reps": 10}, {"weight_kg": 42.5, "reps": 10}],
@@ -88,6 +90,7 @@ RECENT_LIFTS = {
         "Reverse Pec Deck Fly": [{"weight_kg": 47, "reps": 12}, {"weight_kg": 45, "reps": 15}, {"weight_kg": 45, "reps": 14}],
         "Preacher Curl": [{"weight_kg": 36, "reps": 12}, {"weight_kg": 36, "reps": 10}, {"weight_kg": 30, "reps": 12}],
         "Incline Dumbbell Curl": [{"weight_kg": 15, "reps": 10}, {"weight_kg": 12.5, "reps": 12}, {"weight_kg": 12.5, "reps": 12}],
+        "Ab Wheel Rollout": [{"weight_kg": 0, "reps": 8}, {"weight_kg": 0, "reps": 8}, {"weight_kg": 0, "reps": 8}],
     },
     "Lower": {
         "Leg Extension": [{"weight_kg": 85, "reps": 12}, {"weight_kg": 85, "reps": 10}, {"weight_kg": 92.5, "reps": 8}],
@@ -95,10 +98,9 @@ RECENT_LIFTS = {
         "Hack Squat": [{"weight_kg": 120, "reps": 8}, {"weight_kg": 130, "reps": 10}, {"weight_kg": 130, "reps": 8}],
         "Leg Press": [{"weight_kg": 110, "reps": 10}, {"weight_kg": 105, "reps": 11}, {"weight_kg": 105, "reps": 10}],
         "Calf Raise Machine": [{"weight_kg": 60, "reps": 12}, {"weight_kg": 60, "reps": 12}, {"weight_kg": 60, "reps": 11}, {"weight_kg": 60, "reps": 10}],
-        "Decline Bench Sit Up": [{"weight_kg": 0, "reps": 15}, {"weight_kg": 0, "reps": 15}, {"weight_kg": 0, "reps": 15}, {"weight_kg": 0, "reps": 15}],
     },
     "Legs": {
-        "Barbell Bench Press": [{"weight_kg": 55, "reps": 8}, {"weight_kg": 55, "reps": 8}, {"weight_kg": 52.5, "reps": 9}],
+        "Barbell Hip Thrust": [{"weight_kg": 60, "reps": 8}, {"weight_kg": 60, "reps": 8}, {"weight_kg": 60, "reps": 8}],
         "Lying Leg Curl": [{"weight_kg": 50, "reps": 12}, {"weight_kg": 50, "reps": 11}, {"weight_kg": 50, "reps": 11}],
         "Leg Extension": [{"weight_kg": 85, "reps": 12}, {"weight_kg": 77.5, "reps": 15}, {"weight_kg": 77.5, "reps": 13}],
         "Hyperextension": [{"weight_kg": 10, "reps": 12}, {"weight_kg": 10, "reps": 12}, {"weight_kg": 10, "reps": 12}],
@@ -121,7 +123,7 @@ SEED_MEALS = [
 
 ERO_SYSTEM_PROMPT = """You are Ero, Blake's personal trainer. Experienced, opinionated, warm but hard-edged. A coach, not a chatbot.
 
-Blake: 18yo male, 180cm, ~65.7kg, lean-bulking to 70kg by peak summer. ULPPL split (Mon Upper, Tue Lower, Wed rest, Thu Push, Fri Pull, Sat Legs, Sun rest). Works Mon-Fri 7:30am-4:30pm at a car dealership, trains 6:30pm. Bench 1RM ~70kg. 3+ months in.
+Blake: 18yo male, 180cm, ~65.7kg, lean-bulking to 70kg by peak summer. ULPPL split (Mon Upper, Tue Lower, Wed rest, Thu Push, Fri Pull, Sat Legs, Sun rest). Works Mon-Fri 7:30am-4:30pm at a car dealership, trains 6:30pm. Barbell bench retired (1RM was ~70kg); pressing is now DB bench / machine press. Program updated 21 Sept 2026 - new lifts start conservative and build. 3+ months in.
 
 # HOW YOU THINK BEFORE EVERY REPLY
 1. What did Blake JUST say? That single message is the topic. Earlier turns are background, never the subject. Named a venue -> talk only about that venue. Named a session or lift -> only that.
