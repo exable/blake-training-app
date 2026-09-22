@@ -214,7 +214,7 @@ def _format_meal_plan(user_id: int, today: date) -> str:
         total_f += m.fat or 0
         status = "EATEN" if logs.get(m.id) else "not eaten"
         lines.append(
-            f"    {m.scheduled_time or '--:--'} — {m.name} "
+            f"    [id {m.id}] {m.scheduled_time or '--:--'} — {m.name} "
             f"[{m.calories}kcal / {m.protein}P / {m.carbs}C / {m.fat}F] — {status}"
         )
     lines.append(
@@ -421,7 +421,7 @@ CURRENT PROGRAM (ULPPL — rest Wed & Sun):
 CURRENT WORKING WEIGHTS (most recent logged sets per exercise — this IS his program loading):
 {_format_working_weights(user_id)}
 
-CURRENT MEAL PLAN (today's status — this IS his nutrition plan, not generic advice):
+CURRENT MEAL PLAN (today's status — this IS his nutrition plan. Tools take the [id N] shown on each line; a name like "Meal 3" is NOT the id):
 {_format_meal_plan(user_id, today)}
 
 Today so far: {eaten_count}/{total_meals} meals eaten, {water_today}ml water (target {user.daily_water_target_ml}ml)
@@ -632,7 +632,8 @@ EROS_TOOLS = [
         "name": "update_meal",
         "description": (
             "Update an existing meal in Blake's plan. Use this when he agrees to a meal change "
-            "or you want to adjust macros to hit his daily targets. Only provide fields you "
+            "or you want to adjust macros to hit his daily targets. If CURRENT MEAL PLAN already "
+            "shows the change, it is done - do not call again. Only provide fields you "
             "want to change. ALWAYS recompute macros coherently — don't add isolated grams "
             "without a real food item to back them. Example: if adding 20g WPI to a shake, "
             "increment protein by 18, carbs by 1, fat by 0.5, calories by 80."
@@ -640,8 +641,8 @@ EROS_TOOLS = [
         "input_schema": {
             "type": "object",
             "properties": {
-                "meal_id": {"type": "integer", "description": "The meal ID from the meal plan in context"},
-                "name": {"type": "string", "description": "New full meal description with portions"},
+                "meal_id": {"type": "integer", "description": "The [id N] shown on that meal's line in CURRENT MEAL PLAN. Never derive it from the meal's name or position."},
+                "name": {"type": "string", "description": "New full meal description with portions. Keep the existing 'Meal N - ' label at the front so the meal keeps its number."},
                 "scheduled_time": {"type": "string", "description": "HH:MM 24h, e.g. 13:15"},
                 "calories": {"type": "integer"},
                 "protein": {"type": "integer"},
@@ -729,7 +730,9 @@ def _execute_tool(user_id: int, name: str, args: dict) -> dict:
         if name == "update_meal":
             m = Meal.query.filter_by(id=args["meal_id"], user_id=user_id, is_active=True).first()
             if not m:
-                return {"error": f"Meal {args['meal_id']} not found"}
+                ids = ", ".join(f"[id {x.id}] {x.name[:30]}" for x in Meal.query.filter_by(user_id=user_id, is_active=True).order_by(Meal.sort_order))
+                return {"error": f"Meal id {args['meal_id']} not found. Valid: {ids}"}
+            before = {"name": m.name, "calories": m.calories, "protein": m.protein, "carbs": m.carbs, "fat": m.fat}
             for f in ("name", "scheduled_time"):
                 if f in args and args[f] is not None:
                     setattr(m, f, args[f])
@@ -738,8 +741,9 @@ def _execute_tool(user_id: int, name: str, args: dict) -> dict:
                     setattr(m, f, int(args[f]))
             db.session.commit()
             return {
-                "ok": True, "meal_id": m.id, "name": m.name,
-                "calories": m.calories, "protein": m.protein, "carbs": m.carbs, "fat": m.fat,
+                "ok": True, "meal_id": m.id, "before": before, "after": {
+                    "name": m.name, "calories": m.calories, "protein": m.protein, "carbs": m.carbs, "fat": m.fat,
+                },
                 "new_plan_totals": _plan_totals(user_id),
             }
         elif name == "add_meal":
