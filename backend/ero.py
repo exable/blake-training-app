@@ -324,6 +324,19 @@ def _format_today_status(user_id: int, today: date) -> str:
     return f"  TODAY ({scheduled} scheduled): not started yet."
 
 
+def _format_upcoming(today: date) -> str:
+    """Yesterday + next 7 days with the scheduled session, so 'tomorrow' is never guessed."""
+    rows = []
+    y = today - timedelta(days=1)
+    rows.append(f"  Yesterday {y.strftime('%a %d %b')}: {DAY_TO_SESSION[y.weekday()]}")
+    rows.append(f"  TODAY {today.strftime('%a %d %b')}: {DAY_TO_SESSION[today.weekday()]}")
+    for i in range(1, 8):
+        d = today + timedelta(days=i)
+        label = "Tomorrow" if i == 1 else d.strftime("%a")
+        rows.append(f"  {label} {d.strftime('%d %b')}: {DAY_TO_SESSION[d.weekday()]}")
+    return "\n".join(rows)
+
+
 def build_context(user_id: int) -> str:
     """Build a concise data-rich context block to prepend to Ero conversations."""
     user = db.session.get(User, user_id)
@@ -395,6 +408,9 @@ def build_context(user_id: int) -> str:
 {active_block or ''}
 TODAY'S TRAINING STATUS (read this BEFORE saying anything about whether Blake trained today):
 {today_status}
+
+SCHEDULE (use these labels for yesterday/today/tomorrow - do not work out weekdays yourself):
+{_format_upcoming(today)}
 
 GOALS & TARGETS:
 {_format_targets(user)}
@@ -697,6 +713,16 @@ EROS_TOOLS = [
 ]
 
 
+def _plan_totals(user_id: int) -> dict:
+    meals = Meal.query.filter_by(user_id=user_id, is_active=True).all()
+    return {
+        "kcal": sum(m.calories or 0 for m in meals),
+        "protein": sum(m.protein or 0 for m in meals),
+        "carbs": sum(m.carbs or 0 for m in meals),
+        "fat": sum(m.fat or 0 for m in meals),
+    }
+
+
 def _execute_tool(user_id: int, name: str, args: dict) -> dict:
     """Run a tool action and return a result dict for the tool_result message."""
     try:
@@ -714,6 +740,7 @@ def _execute_tool(user_id: int, name: str, args: dict) -> dict:
             return {
                 "ok": True, "meal_id": m.id, "name": m.name,
                 "calories": m.calories, "protein": m.protein, "carbs": m.carbs, "fat": m.fat,
+                "new_plan_totals": _plan_totals(user_id),
             }
         elif name == "add_meal":
             max_order = db.session.query(func.max(Meal.sort_order)).filter_by(user_id=user_id).scalar() or 0
@@ -728,14 +755,14 @@ def _execute_tool(user_id: int, name: str, args: dict) -> dict:
             )
             db.session.add(m)
             db.session.commit()
-            return {"ok": True, "created_id": m.id, "name": m.name}
+            return {"ok": True, "created_id": m.id, "name": m.name, "new_plan_totals": _plan_totals(user_id)}
         elif name == "delete_meal":
             m = Meal.query.filter_by(id=args["meal_id"], user_id=user_id, is_active=True).first()
             if not m:
                 return {"error": f"Meal {args['meal_id']} not found"}
             m.is_active = False
             db.session.commit()
-            return {"ok": True, "deleted_id": m.id}
+            return {"ok": True, "deleted_id": m.id, "new_plan_totals": _plan_totals(user_id)}
         elif name == "update_targets":
             u = db.session.get(User, user_id)
             for f in ("daily_calorie_target", "daily_protein_target", "daily_carb_target",
