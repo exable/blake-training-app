@@ -1,10 +1,12 @@
 import React, { useEffect, useState } from 'react';
-import { Calendar, Check, Upload } from 'lucide-react';
+import { Calendar, Check, Phone } from 'lucide-react';
 import { api } from '../lib/api.js';
 import Spinner, { FullSpinner } from '../components/Spinner.jsx';
 import ErrorBanner from '../components/ErrorBanner.jsx';
 import useDraft from '../lib/useDraft.js';
 import VoiceInput from '../components/VoiceInput.jsx';
+import PhotoUpload from '../components/PhotoUpload.jsx';
+import CheckinCall from '../components/CheckinCall.jsx';
 
 export default function Checkins() {
   const [tab, setTab] = useState('daily');
@@ -35,6 +37,7 @@ function DailyCheckin() {
   });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
+  const [call, setCall] = useState(false);
 
   async function load() {
     try {
@@ -45,7 +48,7 @@ function DailyCheckin() {
   useEffect(() => { load(); }, []);
 
   async function submit(e) {
-    e.preventDefault();
+    e?.preventDefault?.();
     setBusy(true);
     setError(null);
     try {
@@ -54,6 +57,7 @@ function DailyCheckin() {
         weight_kg: form.weight_kg ? parseFloat(form.weight_kg) : null,
       });
       clearDraft();
+      setCall(false);
       await load();
     } catch (e) { setError(e.message); }
     finally { setBusy(false); }
@@ -84,6 +88,8 @@ function DailyCheckin() {
   return (
     <form onSubmit={submit} className="card space-y-4">
       <ErrorBanner error={error} onDismiss={() => setError(null)} />
+      <CallButton onClick={() => setCall(true)} label="Do it as a call with Ero" />
+      {call && <CheckinCall kind="daily" form={form} setForm={setForm} photos={{}} onSubmit={() => submit()} onClose={() => setCall(false)} busy={busy} />}
       <div>
         <label className="label">Current weight (kg)</label>
         <input
@@ -154,6 +160,7 @@ function WeeklyCheckin() {
   });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
+  const [call, setCall] = useState(false);
 
   async function load() {
     try {
@@ -181,7 +188,7 @@ function WeeklyCheckin() {
   }
 
   async function submit(e) {
-    e.preventDefault();
+    e?.preventDefault?.();
     setBusy(true);
     setError(null);
     try {
@@ -194,6 +201,7 @@ function WeeklyCheckin() {
       });
       clearDraft();
       setPhotos({});
+      setCall(false);
       await load();
     } catch (e) { setError(e.message); }
     finally { setBusy(false); }
@@ -214,6 +222,11 @@ function WeeklyCheckin() {
       ) : (
         <form onSubmit={submit} className="card space-y-4">
           <div className="text-xs uppercase tracking-wider text-textmuted">Week of {avail.week_start_date}</div>
+          <CallButton onClick={() => setCall(true)} label="Do it as a call with Ero" />
+          {call && (
+            <CheckinCall kind="weekly" form={form} setForm={setForm} photos={photos} uploadingType={uploadingType}
+              onUploadPhoto={uploadPhoto} onSubmit={() => submit()} onClose={() => setCall(false)} busy={busy} />
+          )}
 
           <div>
             <label className="label">Current weight (kg)</label>
@@ -315,6 +328,21 @@ function WeeklyCheckin() {
   );
 }
 
+function CallButton({ onClick, label }) {
+  return (
+    <button type="button" onClick={onClick} className="w-full flex items-center justify-between gap-3 rounded-xl border border-accent/40 bg-accent/10 px-4 py-3 text-left hover:bg-accent/15 transition-all">
+      <span className="flex items-center gap-3">
+        <span className="w-9 h-9 rounded-full bg-accent flex items-center justify-center text-white"><Phone size={16} /></span>
+        <span>
+          <span className="block text-sm font-semibold">{label}</span>
+          <span className="block text-xs text-textmuted">He asks, you talk. Fix anything at the end.</span>
+        </span>
+      </span>
+      <span className="text-xs text-accent">Start</span>
+    </button>
+  );
+}
+
 function Row({ label, children }) {
   return (
     <div className="flex flex-col sm:flex-row sm:items-start gap-1 sm:gap-3 text-sm">
@@ -354,35 +382,5 @@ function Radio({ label, value, onChange, options }) {
         ))}
       </div>
     </div>
-  );
-}
-
-function PhotoUpload({ type, uploaded, uploading, onSelect }) {
-  const id = `photo-${type}`;
-  return (
-    <label
-      htmlFor={id}
-      className={`aspect-square rounded-xl border-2 border-dashed flex items-center justify-center cursor-pointer transition-all overflow-hidden relative ${
-        uploaded ? 'border-accent' : 'border-line hover:border-accent/50'
-      }`}
-    >
-      {uploaded?.url ? (
-        <img src={uploaded.url} alt={type} className="w-full h-full object-cover" />
-      ) : uploading ? (
-        <Spinner />
-      ) : (
-        <div className="text-center">
-          <Upload size={18} className="mx-auto text-textmuted mb-1" />
-          <div className="text-xs capitalize text-textmuted">{type}</div>
-        </div>
-      )}
-      <input
-        id={id}
-        type="file"
-        accept="image/*"
-        className="hidden"
-        onChange={(e) => e.target.files?.[0] && onSelect(e.target.files[0])}
-      />
-    </label>
   );
 }
